@@ -4,6 +4,18 @@
 #include <iomanip>
 #include <sstream>
 
+#ifdef __WXMSW__
+#include <windows.h>
+#include <uxtheme.h>
+#include <dwmapi.h>
+#pragma comment(lib, "uxtheme.lib")
+#pragma comment(lib, "dwmapi.lib")
+
+#ifndef DWMWA_USE_IMMERSIVE_DARK_MODE
+#define DWMWA_USE_IMMERSIVE_DARK_MODE 20
+#endif
+#endif
+
 namespace pdf {
 
 wxBEGIN_EVENT_TABLE(MainFrame, wxFrame)
@@ -63,6 +75,21 @@ MainFrame::MainFrame(const wxString& title, const wxPoint& pos, const wxSize& si
     rootSizer->Add(m_canvas, 1, wxEXPAND);
     rootSizer->Add(m_bottomBar, 0, wxEXPAND);
     SetSizer(rootSizer);
+
+#ifdef __WXMSW__
+    HWND hwnd = static_cast<HWND>(GetHWND());
+    if (hwnd) {
+        BOOL darkMode = TRUE;
+        DwmSetWindowAttribute(hwnd, DWMWA_USE_IMMERSIVE_DARK_MODE, &darkMode, sizeof(darkMode));
+        SetWindowTheme(hwnd, L"DarkMode_Explorer", nullptr);
+    }
+    if (m_canvas) {
+        HWND canvasHwnd = static_cast<HWND>(m_canvas->GetHWND());
+        if (canvasHwnd) {
+            SetWindowTheme(canvasHwnd, L"DarkMode_Explorer", nullptr);
+        }
+    }
+#endif
 
     UpdateControlsState();
 }

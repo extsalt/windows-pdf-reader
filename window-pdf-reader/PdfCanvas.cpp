@@ -16,10 +16,11 @@ wxBEGIN_EVENT_TABLE(PdfCanvas, wxScrolledCanvas)
 wxEND_EVENT_TABLE()
 
 PdfCanvas::PdfCanvas(wxWindow* parent, std::shared_ptr<PdfEngine> engine)
-    : wxScrolledCanvas(parent, wxID_ANY, wxDefaultPosition, wxDefaultSize, wxVSCROLL | wxHSCROLL | wxBORDER_NONE),
+    : wxScrolledCanvas(parent, wxID_ANY, wxDefaultPosition, wxDefaultSize, wxVSCROLL | wxBORDER_NONE),
       m_engine(std::move(engine)) {
     SetBackgroundStyle(wxBG_STYLE_PAINT);
-    SetScrollRate(16, 16);
+    SetScrollRate(0, 16);
+    ShowScrollbars(wxSHOW_SB_NEVER, wxSHOW_SB_ALWAYS);
 }
 
 int PdfCanvas::GetTotalPages() const noexcept {
@@ -131,11 +132,18 @@ void PdfCanvas::RecomputeContinuousLayout() {
     m_maxPageWidth = maxW;
 
     const wxSize clientSize = GetClientSize();
-    const int virtualWidth = std::max(maxW + (PADDING_X * 2), clientSize.GetWidth());
+    const int clientW = clientSize.GetWidth();
+    const int virtualWidth = std::max(maxW + (PADDING_X * 2), clientW);
 
-    // Center each page horizontally
+    if (virtualWidth > clientW) {
+        SetScrollRate(16, 16);
+    } else {
+        SetScrollRate(0, 16);
+    }
+
+    // Center each page horizontally with symmetric left and right margins
     for (int i = 0; i < pageCount; ++i) {
-        m_pageRects[i].x = (virtualWidth - m_pageRects[i].width) / 2;
+        m_pageRects[i].x = std::max(PADDING_X, (virtualWidth - m_pageRects[i].width) / 2);
     }
 
     SetVirtualSize(virtualWidth, m_totalVirtualHeight);
@@ -277,7 +285,8 @@ double PdfCanvas::CalculateFitWidthZoom() const {
 
     const double pageWidthPts = isRotated ? size.heightPoints : size.widthPoints;
     const wxSize clientSize = GetClientSize();
-    const int availableWidth = std::max(100, clientSize.GetWidth() - (PADDING_X * 2) - 18); // 18px scrollbar allowance
+    // Available width without double-counting scrollbar (clientSize already excludes vertical scrollbar)
+    const int availableWidth = std::max(50, clientSize.GetWidth() - (PADDING_X * 2));
 
     const double factor = static_cast<double>(availableWidth) / pageWidthPts;
     return std::clamp(factor, MIN_ZOOM, MAX_ZOOM);
@@ -298,8 +307,8 @@ double PdfCanvas::CalculateFitPageZoom() const {
     const double pageHeightPts = isRotated ? size.widthPoints : size.heightPoints;
 
     const wxSize clientSize = GetClientSize();
-    const int availableWidth = std::max(100, clientSize.GetWidth() - (PADDING_X * 2) - 18);
-    const int availableHeight = std::max(100, clientSize.GetHeight() - (PADDING_Y * 2));
+    const int availableWidth = std::max(50, clientSize.GetWidth() - (PADDING_X * 2));
+    const int availableHeight = std::max(50, clientSize.GetHeight() - (PADDING_Y * 2));
 
     const double factorW = static_cast<double>(availableWidth) / pageWidthPts;
     const double factorH = static_cast<double>(availableHeight) / pageHeightPts;
@@ -406,10 +415,10 @@ void PdfCanvas::OnPaint(wxPaintEvent& /*event*/) {
             continue;
         }
 
-        // Drop shadow (subtle, clean, modern)
+        // Soft subtle page outline shadow (symmetric, no right-side offset bias)
         dc.SetPen(*wxTRANSPARENT_PEN);
         dc.SetBrush(wxBrush(wxColour(16, 16, 18)));
-        dc.DrawRoundedRectangle(r.x + 2, r.y + 4, r.width, r.height, 2);
+        dc.DrawRectangle(r.x, r.y + 1, r.width, r.height + 1);
 
         // Fetch or render page bitmap
         wxBitmap bmp = GetOrRenderPageBitmap(static_cast<int>(i), r.width, r.height);
@@ -422,8 +431,8 @@ void PdfCanvas::OnPaint(wxPaintEvent& /*event*/) {
             dc.DrawRectangle(r.x, r.y, r.width, r.height);
         }
 
-        // Crisp 1px page boundary line
-        dc.SetPen(wxPen(wxColour(70, 70, 75), 1));
+        // Crisp 1px subtle page border (Apple-like clean edge)
+        dc.SetPen(wxPen(wxColour(50, 50, 55), 1));
         dc.SetBrush(*wxTRANSPARENT_BRUSH);
         dc.DrawRectangle(r.x, r.y, r.width, r.height);
     }
@@ -433,11 +442,10 @@ void PdfCanvas::OnSize(wxSizeEvent& event) {
     if (m_zoomMode == ZoomMode::FitWidth || m_zoomMode == ZoomMode::FitPage) {
         RecomputeContinuousLayout();
     } else if (m_engine && m_engine->IsLoaded()) {
-        // Adjust horizontal centering on resize
         const int clientW = GetClientSize().GetWidth();
         const int virtualWidth = std::max(m_maxPageWidth + (PADDING_X * 2), clientW);
         for (auto& r : m_pageRects) {
-            r.x = (virtualWidth - r.width) / 2;
+            r.x = std::max(PADDING_X, (virtualWidth - r.width) / 2);
         }
         SetVirtualSize(virtualWidth, m_totalVirtualHeight);
     }

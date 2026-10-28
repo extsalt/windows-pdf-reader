@@ -12,13 +12,15 @@ Designed with an **extreme minimal Apple / VLC aesthetic** — no visual clutter
 - **Ultra-Low Memory Footprint**: Runs at **~26 MB RAM** working set during active multi-page continuous document rendering (via viewport virtualization and an LRU bitmap cache).
 - **Tiny Binary**: Release executable is only **~167 KB**.
 - **Extreme Minimal Apple/VLC UI**:
+  - **Lean No-Bezel Design**: Eliminated chunky side bezels with slim 8px margins; left and right frames are perfectly symmetric.
+  - **Fine Vertical Scroll**: Native Win32 `DarkMode_Explorer` dark vertical scrollbar with horizontal scrolling suppressed to prevent corner bevels.
   - Zero bloated top toolbars eating up screen real estate.
   - 95%+ of the window is pure, uninterrupted PDF content.
   - Compact 34px dark control bar at the bottom:
     - Left: Subtle document filename.
     - Center: Clean `‹` `1 / 42` `›` page indicator (click to jump to page).
     - Right: `-` `Fit (100%)` `+` `[ ]` `R` minimal flat controls.
-  - Right-click context menu on canvas for instant access to zoom, rotation, and document properties.
+  - Right-click context menu on canvas for instant access to zoom, rotation, watermark removal, and document properties.
 - **Watermark Eradication ("Dark Hat" Visual Filter & DOM Object Purge)**:
   - **Live Watermark Suppression (`Ctrl+Shift+W`)**: Instant visual removal of faint, translucent watermarks (e.g. "CONFIDENTIAL", "DRAFT", evaluation stamps, background grids) via real-time subpixel luminance filtering and annotation bypass.
   - **Permanent Watermark Purge (`Ctrl+Alt+W`)**: Deep structural inspection across all pages that strips `FPDF_ANNOT_WATERMARK`, stamp annotations, `/Watermark` and `/Artifact` marked content, and translucent overlay objects.

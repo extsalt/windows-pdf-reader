@@ -109,9 +109,10 @@ private:
     PageChangedCallback m_onPageChanged;
     ZoomChangedCallback m_onZoomChanged;
 
-    static constexpr int PADDING_X = 24;
-    static constexpr int PADDING_Y = 18;
-    static constexpr int PAGE_GAP = 16;
+    // Lean Apple-like padding and margins (no bulky bezels)
+    static constexpr int PADDING_X = 8;
+    static constexpr int PADDING_Y = 10;
+    static constexpr int PAGE_GAP = 10;
     static constexpr double MIN_ZOOM = 0.25;
     static constexpr double MAX_ZOOM = 5.0;
     static constexpr double ZOOM_STEP = 1.25;
