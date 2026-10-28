@@ -1,0 +1,37 @@
+# Visual Studio files
+.vs/
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
+
+# Build outputs
+x64/
+x86/
+ARM64/
+Debug/
+Release/
+[Bb]in/
+[Oo]bj/
+*.obj
+*.pdb
+*.ilk
+*.idb
+*.iobj
+*.ipdb
+*.tlog
+*.lastbuildstate
+*.log
+*.exe
+*.dll
+
+# Dependencies (managed via setup.ps1 / nuget)
+packages/
+vendor/
+nuget.exe
+
+# OS generated files
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/

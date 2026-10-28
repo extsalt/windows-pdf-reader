@@ -1,0 +1,7 @@
+<Solution>
+  <Configurations>
+    <Platform Name="x64" />
+    <Platform Name="x86" />
+  </Configurations>
+  <Project Path="window-pdf-reader/window-pdf-reader.vcxproj" Id="bd119dba-fd3c-4b35-89f3-201ee186cdd2" />
+</Solution>
