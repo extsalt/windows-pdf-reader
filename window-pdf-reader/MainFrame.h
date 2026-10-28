@@ -41,6 +41,11 @@ private:
     void OnMenuLastPage(wxCommandEvent& event);
     void OnMenuGoToPage(wxCommandEvent& event);
 
+    // Tools Menu Event Handlers
+    void OnMenuToggleRemoveWatermark(wxCommandEvent& event);
+    void OnMenuPurgeWatermarks(wxCommandEvent& event);
+    void OnMenuSaveCleanedPdf(wxCommandEvent& event);
+
     void OnMenuAbout(wxCommandEvent& event);
 
     // Bottom Bar Click Handlers
@@ -76,6 +81,11 @@ private:
     wxButton* m_btnFit{nullptr};
     wxButton* m_btnRotate{nullptr};
 
+    // Tools menu item pointers
+    wxMenuItem* m_menuItemRemoveWatermark{nullptr};
+    wxMenuItem* m_menuItemPurgeWatermarks{nullptr};
+    wxMenuItem* m_menuItemSaveCleaned{nullptr};
+
     wxString m_currentFilePath;
 
     enum MenuIds {
@@ -92,6 +102,9 @@ private:
         ID_NEXT_PAGE,
         ID_LAST_PAGE,
         ID_GOTO_PAGE,
+        ID_TOOL_REMOVE_WATERMARK,
+        ID_TOOL_PURGE_WATERMARKS,
+        ID_TOOL_SAVE_CLEANED,
         ID_BTN_PREV,
         ID_BTN_NEXT,
         ID_BTN_ZOOM_OUT,

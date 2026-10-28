@@ -19,6 +19,10 @@ Designed with an **extreme minimal Apple / VLC aesthetic** — no visual clutter
     - Center: Clean `‹` `1 / 42` `›` page indicator (click to jump to page).
     - Right: `-` `Fit (100%)` `+` `[ ]` `R` minimal flat controls.
   - Right-click context menu on canvas for instant access to zoom, rotation, and document properties.
+- **Watermark Eradication ("Dark Hat" Visual Filter & DOM Object Purge)**:
+  - **Live Watermark Suppression (`Ctrl+Shift+W`)**: Instant visual removal of faint, translucent watermarks (e.g. "CONFIDENTIAL", "DRAFT", evaluation stamps, background grids) via real-time subpixel luminance filtering and annotation bypass.
+  - **Permanent Watermark Purge (`Ctrl+Alt+W`)**: Deep structural inspection across all pages that strips `FPDF_ANNOT_WATERMARK`, stamp annotations, `/Watermark` and `/Artifact` marked content, and translucent overlay objects.
+  - **Save Cleaned PDF As (`Ctrl+Shift+S`)**: Export the purified document directly to disk with zero watermarks.
 - **Strict Modern C++20 (No Hacks)**:
   - Full RAII wrappers (`ScopedDocument`, `ScopedPage`, `ScopedBitmap`) with custom deleters for PDFium C handles.
   - Zero memory leaks, zero raw handle lifecycle leaks.
@@ -34,6 +38,9 @@ Designed with an **extreme minimal Apple / VLC aesthetic** — no visual clutter
   - `Ctrl + 1` / `Ctrl + 2`: Fit Width / Fit Page.
   - `Ctrl + R`: Rotate 90° clockwise.
   - `Ctrl + G`: Go to page number dialog.
+  - `Ctrl + Shift + W`: Toggle Remove Watermarks (Live Suppression).
+  - `Ctrl + Alt + W`: Permanently Purge Watermark Objects.
+  - `Ctrl + Shift + S`: Save Cleaned PDF As.
   - Drag & Drop: Drop any `.pdf` directly into the window from Windows Explorer.
 
 ---
@@ -152,7 +159,35 @@ Our continuous scrolling engine solves this through **Spatial Viewport Virtualiz
 
 ---
 
-### 4. Footprint & Performance Benchmark Comparison
+### 4. Watermark Eradication: Two-Tier Architecture
+
+Watermarks in PDF documents present in three primary forms: interactive annotations, tagged structural marked content, and baked-in low-contrast raster/vector overlays. The reader provides an end-to-end two-tier solution:
+
+- **Tier 1: Live "Dark Hat" Visual Suppression (`Tools -> Remove Watermark` / `Ctrl+Shift+W`)**:
+  - **Annotation Bypass**: Excludes the `FPDF_ANNOT` rendering flag during page rasterization, immediately suppressing all annotation-level watermarks and stamps.
+  - **Single-Pass Scanline Filter**: Evaluates every pixel in the BGRA-to-RGB conversion loop with zero heap allocation overhead.
+  - **Luminance Thresholding**: Computes subpixel luminance ($Y = 0.299R + 0.587G + 0.114B$).
+  - **Translucent Wash Detection**: Snaps pixels to pure white $(255, 255, 255)$ when matching watermark signatures:
+    - Ultra-faint scanner grain / wash: $Y \ge 235$.
+    - Semi-transparent colored or grey stamps: $\min(R,G,B) \ge 155$ and $Y \ge 170$.
+    - Low-contrast diagonal grey text: $|R-G| \le 25 \land |G-B| \le 25$ and $Y \ge 160$.
+  - **Crisp Text Boost**: Genuine dark text ($Y < 140$) is slightly deepened by 5% to maximize readability against pristine paper white.
+  - **Non-Destructive**: Leaves original PDF files completely untouched on disk.
+
+- **Tier 2: Deep Structural DOM Purging (`Tools -> Permanently Purge Watermark Objects` / `Ctrl+Alt+W`)**:
+  - **Annotation Extraction**: Scans all pages and removes watermark annotations (`FPDF_ANNOT_WATERMARK`) and custom stamps (`FPDF_ANNOT_STAMP`) via `FPDFPage_RemoveAnnot()`.
+  - **Marked Content Analysis**: Inspects object marks with `FPDFPageObj_CountMarks()` and `FPDFPageObjMark_GetName()`; purges objects tagged with `/Watermark` or `/Artifact`.
+  - **Translucent Object Removal**: Detects vector paths and text objects with partial alpha transparency ($0 < \alpha < 200$) via `FPDFPageObj_GetFillColor()` and `FPDFPageObj_GetStrokeColor()`, removing them via `FPDFPage_RemoveObject()`.
+  - **Page Content Stream Regeneration**: Invokes `FPDFPage_GenerateContent()` to rebuild the page content stream.
+
+- **Clean Document Export (`Tools -> Save Cleaned PDF As...` / `Ctrl+Shift+S`)**:
+  - Serializes the purged in-memory document to a new PDF file via `FPDF_SaveAsCopy()`.
+  - Employs a custom streaming file writer context (`FPDF_FILEWRITE`) with chunked binary output.
+  - Produces a lightweight, completely watermark-free PDF readable in any standard viewer.
+
+---
+
+### 5. Footprint & Performance Benchmark Comparison
 
 | Metric | Window PDF Reader (This Project) | SumatraPDF | Edge / Chrome Built-in | Electron PDF Viewer |
 | :--- | :---: | :---: | :---: | :---: |
@@ -168,7 +203,7 @@ Our continuous scrolling engine solves this through **Spatial Viewport Virtualiz
 
 ---
 
-### 5. Developer Guide & Build Configuration
+### 6. Developer Guide & Build Configuration
 
 #### Solution Structure
 ```

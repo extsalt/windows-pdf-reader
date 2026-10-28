@@ -26,6 +26,10 @@ wxBEGIN_EVENT_TABLE(MainFrame, wxFrame)
     EVT_MENU(MainFrame::ID_LAST_PAGE, MainFrame::OnMenuLastPage)
     EVT_MENU(MainFrame::ID_GOTO_PAGE, MainFrame::OnMenuGoToPage)
 
+    EVT_MENU(MainFrame::ID_TOOL_REMOVE_WATERMARK, MainFrame::OnMenuToggleRemoveWatermark)
+    EVT_MENU(MainFrame::ID_TOOL_PURGE_WATERMARKS, MainFrame::OnMenuPurgeWatermarks)
+    EVT_MENU(MainFrame::ID_TOOL_SAVE_CLEANED, MainFrame::OnMenuSaveCleanedPdf)
+
     EVT_MENU(wxID_ABOUT, MainFrame::OnMenuAbout)
 wxEND_EVENT_TABLE()
 
@@ -100,6 +104,14 @@ void MainFrame::SetupMenuBar() {
     menuGo->Append(ID_GOTO_PAGE, "&Go to Page...\tCtrl+G", "Jump to page number");
     menuBar->Append(menuGo, "&Go");
 
+    // Tools
+    auto* menuTools = new wxMenu();
+    m_menuItemRemoveWatermark = menuTools->AppendCheckItem(ID_TOOL_REMOVE_WATERMARK, "&Remove Watermark\tCtrl+Shift+W", "Suppress and filter faint watermark overlays and annotations");
+    menuTools->AppendSeparator();
+    m_menuItemPurgeWatermarks = menuTools->Append(ID_TOOL_PURGE_WATERMARKS, "&Permanently Purge Watermark Objects\tCtrl+Alt+W", "Strip all watermark annotations, marked content, and translucent objects");
+    m_menuItemSaveCleaned = menuTools->Append(ID_TOOL_SAVE_CLEANED, "&Save Cleaned PDF As...\tCtrl+Shift+S", "Export current cleaned PDF to a new file without watermarks");
+    menuBar->Append(menuTools, "&Tools");
+
     // Help
     auto* menuHelp = new wxMenu();
     menuHelp->Append(wxID_ABOUT, "&About PDF Reader...\tF1", "About");
@@ -119,6 +131,9 @@ void MainFrame::SetupMenuBar() {
         { wxACCEL_CTRL, '1', ID_FIT_WIDTH },
         { wxACCEL_CTRL, '2', ID_FIT_PAGE },
         { wxACCEL_CTRL, 'R', ID_ROTATE_CW },
+        { wxACCEL_CTRL | wxACCEL_SHIFT, 'W', ID_TOOL_REMOVE_WATERMARK },
+        { wxACCEL_CTRL | wxACCEL_ALT, 'W', ID_TOOL_PURGE_WATERMARKS },
+        { wxACCEL_CTRL | wxACCEL_SHIFT, 'S', ID_TOOL_SAVE_CLEANED },
         { wxACCEL_NORMAL, WXK_F1, wxID_ABOUT }
     };
     SetAcceleratorTable(wxAcceleratorTable(sizeof(entries) / sizeof(entries[0]), entries));
@@ -372,10 +387,74 @@ void MainFrame::OnZoomLabelClicked(wxMouseEvent&) {
     }
 }
 
+void MainFrame::OnMenuToggleRemoveWatermark(wxCommandEvent& event) {
+    if (!m_engine || !m_canvas) return;
+    const bool enable = event.IsChecked();
+    m_canvas->SetWatermarkFilter(enable);
+    if (m_menuItemRemoveWatermark) {
+        m_menuItemRemoveWatermark->Check(enable);
+    }
+    if (m_fileLabel && m_engine->IsLoaded()) {
+        wxFileName fn(m_currentFilePath);
+        m_fileLabel->SetLabel(fn.GetFullName() + (enable ? " [Watermark Suppressed]" : ""));
+    }
+}
+
+void MainFrame::OnMenuPurgeWatermarks(wxCommandEvent&) {
+    if (!m_engine || !m_engine->IsLoaded() || !m_canvas) return;
+
+    wxBusyCursor busy;
+    const auto report = m_engine->PurgeWatermarks();
+
+    if (report.success) {
+        m_canvas->ClearCacheAndRefresh();
+        const wxString msg = wxString::Format(
+            "Watermark Purge Completed:\n\n"
+            "- Removed %d watermark/stamp annotation(s)\n"
+            "- Removed %d marked content / translucent object(s)\n"
+            "- Processed %d page(s)\n\n"
+            "Use 'Tools -> Save Cleaned PDF As...' to export the clean document.",
+            report.annotationsRemoved,
+            report.objectsRemoved,
+            report.pagesProcessed
+        );
+        wxMessageBox(msg, "Watermarks Purged", wxOK | wxICON_INFORMATION, this);
+    } else {
+        wxMessageBox("Failed to purge watermarks: " + wxString::FromUTF8(m_engine->GetLastError().c_str()),
+                     "Error", wxOK | wxICON_ERROR, this);
+    }
+}
+
+void MainFrame::OnMenuSaveCleanedPdf(wxCommandEvent&) {
+    if (!m_engine || !m_engine->IsLoaded()) return;
+
+    wxFileName currentFn(m_currentFilePath);
+    wxString defaultCleanName = currentFn.GetName() + "_clean.pdf";
+
+    wxFileDialog saveFileDialog(this, "Save Cleaned PDF As", currentFn.GetPath(), defaultCleanName,
+                                "PDF Files (*.pdf)|*.pdf",
+                                wxFD_SAVE | wxFD_OVERWRITE_PROMPT);
+
+    if (saveFileDialog.ShowModal() == wxID_CANCEL) {
+        return;
+    }
+
+    const wxString savePath = saveFileDialog.GetPath();
+    wxBusyCursor busy;
+    if (m_engine->SaveDocumentAs(savePath.ToStdString())) {
+        wxMessageBox("Cleaned PDF saved successfully to:\n" + savePath,
+                     "Save Complete", wxOK | wxICON_INFORMATION, this);
+    } else {
+        wxMessageBox("Failed to save cleaned PDF:\n" + wxString::FromUTF8(m_engine->GetLastError().c_str()),
+                     "Error Saving File", wxOK | wxICON_ERROR, this);
+    }
+}
+
 void MainFrame::OnMenuAbout(wxCommandEvent&) {
     wxMessageBox("Minimal PDF Reader\n\n"
                  "Powered by Google PDFium and wxWidgets.\n"
-                 "Continuous page scrolling with subpixel rendering and minimal memory footprint.\n",
+                 "Continuous page scrolling with subpixel rendering and minimal memory footprint.\n\n"
+                 "Features built-in Watermark Suppression and DOM Object Purging tools.",
                  "About", wxOK | wxICON_INFORMATION, this);
 }
 
@@ -400,6 +479,13 @@ void MainFrame::UpdateControlsState() {
         mb->Enable(ID_NEXT_PAGE, hasDoc && cur < total - 1);
         mb->Enable(ID_LAST_PAGE, hasDoc && cur < total - 1);
         mb->Enable(ID_GOTO_PAGE, hasDoc && total > 1);
+        mb->Enable(ID_TOOL_REMOVE_WATERMARK, hasDoc);
+        mb->Enable(ID_TOOL_PURGE_WATERMARKS, hasDoc);
+        mb->Enable(ID_TOOL_SAVE_CLEANED, hasDoc);
+    }
+
+    if (m_menuItemRemoveWatermark) {
+        m_menuItemRemoveWatermark->Check(m_engine ? m_engine->IsWatermarkFilterEnabled() : false);
     }
 
     if (m_btnPrev) m_btnPrev->Enable(hasDoc && cur > 0);

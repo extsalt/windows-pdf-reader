@@ -2,6 +2,13 @@
 #include <wx/string.h>
 #include <cstdlib>
 #include <cstring>
+#include <algorithm>
+#include <cctype>
+#include <fstream>
+#include <vector>
+#include <pdfium/fpdf_edit.h>
+#include <pdfium/fpdf_annot.h>
+#include <pdfium/fpdf_save.h>
 
 namespace pdf {
 
@@ -103,7 +110,10 @@ wxImage PdfEngine::RenderPageToImage(int pageIndex, int targetWidth, int targetH
     FPDFBitmap_FillRect(bitmap.get(), 0, 0, targetWidth, targetHeight, 0xFFFFFFFF);
 
     // Render with anti-aliasing and subpixel LCD text for crisp display
-    constexpr int renderFlags = FPDF_ANNOT | FPDF_LCD_TEXT;
+    int renderFlags = FPDF_LCD_TEXT;
+    if (!m_watermarkFilterEnabled) {
+        renderFlags |= FPDF_ANNOT;
+    }
     FPDF_RenderPageBitmap(bitmap.get(), page.get(), 0, 0, targetWidth, targetHeight, rotation, renderFlags);
 
     const auto* srcBuffer = static_cast<const uint8_t*>(FPDFBitmap_GetBuffer(bitmap.get()));
@@ -130,9 +140,41 @@ wxImage PdfEngine::RenderPageToImage(int pageIndex, int targetWidth, int targetH
         for (int x = 0; x < targetWidth; ++x) {
             const int srcIdx = x * 4;
             const int dstIdx = x * 3;
-            rowDst[dstIdx + 0] = rowSrc[srcIdx + 2]; // Red
-            rowDst[dstIdx + 1] = rowSrc[srcIdx + 1]; // Green
-            rowDst[dstIdx + 2] = rowSrc[srcIdx + 0]; // Blue
+            uint8_t b = rowSrc[srcIdx + 0];
+            uint8_t g = rowSrc[srcIdx + 1];
+            uint8_t r = rowSrc[srcIdx + 2];
+
+            if (m_watermarkFilterEnabled) {
+                // Dark-hat watermark eradication:
+                // Faint, translucent grey/colored watermark text or background stamps
+                const uint32_t minChan = std::min({ r, g, b });
+                const uint32_t maxChan = std::max({ r, g, b });
+                const float lum = 0.299f * r + 0.587f * g + 0.114f * b;
+
+                bool isWatermarkPixel = false;
+                if (lum >= 235.0f) {
+                    isWatermarkPixel = true;
+                } else if (minChan >= 155 && lum >= 170.0f) {
+                    isWatermarkPixel = true;
+                } else if ((maxChan - minChan) <= 25 && lum >= 160.0f) {
+                    isWatermarkPixel = true;
+                }
+
+                if (isWatermarkPixel) {
+                    r = 255;
+                    g = 255;
+                    b = 255;
+                } else if (lum < 140.0f) {
+                    // Deepen genuine dark text to maximize reading contrast
+                    r = static_cast<uint8_t>(r * 0.95f);
+                    g = static_cast<uint8_t>(g * 0.95f);
+                    b = static_cast<uint8_t>(b * 0.95f);
+                }
+            }
+
+            rowDst[dstIdx + 0] = r; // Red
+            rowDst[dstIdx + 1] = g; // Green
+            rowDst[dstIdx + 2] = b; // Blue
         }
     }
 
@@ -176,6 +218,141 @@ DocumentMetadata PdfEngine::GetMetadata() const {
     }
 
     return meta;
+}
+
+PdfEngine::WatermarkPurgeReport PdfEngine::PurgeWatermarks() {
+    WatermarkPurgeReport report{};
+    if (!m_document) {
+        m_lastError = "No document loaded";
+        return report;
+    }
+
+    for (int pageIdx = 0; pageIdx < m_pageCount; ++pageIdx) {
+        ScopedPage page(FPDF_LoadPage(m_document.get(), pageIdx));
+        if (!page) continue;
+
+        bool pageModified = false;
+
+        // 1. Purge watermark and stamp annotations
+        const int annotCount = FPDFPage_GetAnnotCount(page.get());
+        for (int a = annotCount - 1; a >= 0; --a) {
+            FPDF_ANNOTATION annot = FPDFPage_GetAnnot(page.get(), a);
+            if (!annot) continue;
+
+            const FPDF_ANNOTATION_SUBTYPE subtype = FPDFAnnot_GetSubtype(annot);
+            const bool isWm = (subtype == FPDF_ANNOT_WATERMARK || subtype == FPDF_ANNOT_STAMP);
+            FPDFPage_CloseAnnot(annot);
+
+            if (isWm) {
+                if (FPDFPage_RemoveAnnot(page.get(), a)) {
+                    report.annotationsRemoved++;
+                    pageModified = true;
+                }
+            }
+        }
+
+        // 2. Purge marked content (/Watermark, /Artifact) and translucent overlay objects
+        const int objCount = FPDFPage_CountObjects(page.get());
+        for (int o = objCount - 1; o >= 0; --o) {
+            FPDF_PAGEOBJECT obj = FPDFPage_GetObject(page.get(), o);
+            if (!obj) continue;
+
+            bool isWatermark = false;
+
+            // Check marked content tag
+            const int markCount = FPDFPageObj_CountMarks(obj);
+            for (int m = 0; m < markCount; ++m) {
+                FPDF_PAGEOBJECTMARK mark = FPDFPageObj_GetMark(obj, m);
+                if (!mark) continue;
+
+                unsigned long bufLen = 0;
+                if (FPDFPageObjMark_GetName(mark, nullptr, 0, &bufLen) && bufLen > 0) {
+                    std::vector<FPDF_WCHAR> nameBuf((bufLen / sizeof(FPDF_WCHAR)) + 2, 0);
+                    if (FPDFPageObjMark_GetName(mark, nameBuf.data(), bufLen, &bufLen)) {
+                        std::wstring markName(reinterpret_cast<const wchar_t*>(nameBuf.data()));
+                        std::string lower;
+                        for (wchar_t wc : markName) {
+                            if (wc == 0) break;
+                            lower += static_cast<char>(std::tolower(static_cast<unsigned char>(wc)));
+                        }
+                        if (lower.find("watermark") != std::string::npos ||
+                            lower.find("artifact") != std::string::npos) {
+                            isWatermark = true;
+                            break;
+                        }
+                    }
+                }
+            }
+
+            // Check transparency/alpha on fill or stroke
+            if (!isWatermark) {
+                unsigned int r = 0, g = 0, b = 0, a = 255;
+                if (FPDFPageObj_GetFillColor(obj, &r, &g, &b, &a)) {
+                    if (a > 0 && a < 200) {
+                        isWatermark = true;
+                    }
+                }
+                if (!isWatermark && FPDFPageObj_GetStrokeColor(obj, &r, &g, &b, &a)) {
+                    if (a > 0 && a < 200) {
+                        isWatermark = true;
+                    }
+                }
+            }
+
+            if (isWatermark) {
+                if (FPDFPage_RemoveObject(page.get(), obj)) {
+                    FPDFPageObj_Destroy(obj);
+                    report.objectsRemoved++;
+                    pageModified = true;
+                }
+            }
+        }
+
+        if (pageModified) {
+            FPDFPage_GenerateContent(page.get());
+        }
+        report.pagesProcessed++;
+    }
+
+    report.success = true;
+    return report;
+}
+
+bool PdfEngine::SaveDocumentAs(const std::string& outputPath) const {
+    if (!m_document) {
+        m_lastError = "No document loaded";
+        return false;
+    }
+
+    struct FileWriterContext : public FPDF_FILEWRITE {
+        std::ofstream file;
+        explicit FileWriterContext(const std::string& path) {
+            version = 1;
+            WriteBlock = &WriteBlockCallback;
+            file.open(path, std::ios::binary | std::ios::trunc);
+        }
+        static int WriteBlockCallback(FPDF_FILEWRITE* self, const void* data, unsigned long size) {
+            auto* ctx = static_cast<FileWriterContext*>(self);
+            if (ctx->file.is_open()) {
+                ctx->file.write(static_cast<const char*>(data), size);
+                return ctx->file.good() ? 1 : 0;
+            }
+            return 0;
+        }
+    };
+
+    FileWriterContext writer(outputPath);
+    if (!writer.file.is_open()) {
+        m_lastError = "Could not open output file for writing";
+        return false;
+    }
+
+    if (!FPDF_SaveAsCopy(m_document.get(), &writer, FPDF_NO_INCREMENTAL)) {
+        m_lastError = "Failed to serialize and save PDF";
+        return false;
+    }
+
+    return true;
 }
 
 } // namespace pdf

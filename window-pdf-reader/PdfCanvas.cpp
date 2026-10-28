@@ -70,6 +70,23 @@ void PdfCanvas::ClearBitmapCache() {
     m_lruOrder.clear();
 }
 
+void PdfCanvas::SetWatermarkFilter(bool enable) {
+    if (m_engine) {
+        m_engine->SetWatermarkFilter(enable);
+        ClearCacheAndRefresh();
+    }
+}
+
+bool PdfCanvas::IsWatermarkFilterEnabled() const {
+    return m_engine ? m_engine->IsWatermarkFilterEnabled() : false;
+}
+
+void PdfCanvas::ClearCacheAndRefresh() {
+    ClearBitmapCache();
+    Refresh(false);
+    Update();
+}
+
 void PdfCanvas::RecomputeContinuousLayout() {
     if (!m_engine || !m_engine->IsLoaded()) {
         m_pageRects.clear();
@@ -515,6 +532,9 @@ void PdfCanvas::OnContextMenu(wxContextMenuEvent& /*event*/) {
     menu.AppendSeparator();
     auto* mRot = menu.Append(wxID_ANY, "Rotate Clockwise\tCtrl+R");
     menu.AppendSeparator();
+    auto* mWatermark = menu.AppendCheckItem(wxID_ANY, "Remove Watermarks\tCtrl+Shift+W");
+    mWatermark->Check(IsWatermarkFilterEnabled());
+    menu.AppendSeparator();
     auto* mProps = menu.Append(wxID_ANY, "Document Properties...\tAlt+Enter");
 
     mZoomIn->Enable(hasDoc);
@@ -523,6 +543,7 @@ void PdfCanvas::OnContextMenu(wxContextMenuEvent& /*event*/) {
     mFitW->Enable(hasDoc);
     mFitP->Enable(hasDoc);
     mRot->Enable(hasDoc);
+    mWatermark->Enable(hasDoc);
     mProps->Enable(hasDoc);
 
     menu.Bind(wxEVT_MENU, [this](wxCommandEvent&) {
@@ -536,6 +557,9 @@ void PdfCanvas::OnContextMenu(wxContextMenuEvent& /*event*/) {
     menu.Bind(wxEVT_MENU, [this](wxCommandEvent&) { SetZoomMode(ZoomMode::FitWidth); }, mFitW->GetId());
     menu.Bind(wxEVT_MENU, [this](wxCommandEvent&) { SetZoomMode(ZoomMode::FitPage); }, mFitP->GetId());
     menu.Bind(wxEVT_MENU, [this](wxCommandEvent&) { RotateClockwise(); }, mRot->GetId());
+    menu.Bind(wxEVT_MENU, [this, mWatermark](wxCommandEvent&) {
+        SetWatermarkFilter(mWatermark->IsChecked());
+    }, mWatermark->GetId());
     menu.Bind(wxEVT_MENU, [this](wxCommandEvent&) {
         wxCommandEvent evt(wxEVT_MENU, wxID_HIGHEST + 1); // ID_PROPERTIES
         GetParent()->GetEventHandler()->ProcessEvent(evt);

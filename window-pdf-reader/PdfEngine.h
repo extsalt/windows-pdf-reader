@@ -88,6 +88,22 @@ public:
     // Render a page at given pixel dimensions and rotation (0: normal, 1: 90 deg, 2: 180 deg, 3: 270 deg)
     [[nodiscard]] wxImage RenderPageToImage(int pageIndex, int targetWidth, int targetHeight, int rotation = 0) const;
 
+    // Watermark filter & dark-hat suppression
+    void SetWatermarkFilter(bool enable) noexcept { m_watermarkFilterEnabled = enable; }
+    [[nodiscard]] bool IsWatermarkFilterEnabled() const noexcept { return m_watermarkFilterEnabled; }
+
+    // Deep structural watermark purging
+    struct WatermarkPurgeReport {
+        int annotationsRemoved{0};
+        int objectsRemoved{0};
+        int pagesProcessed{0};
+        bool success{false};
+    };
+    WatermarkPurgeReport PurgeWatermarks();
+
+    // Export / Save document
+    bool SaveDocumentAs(const std::string& outputPath) const;
+
     // Document metadata
     [[nodiscard]] DocumentMetadata GetMetadata() const;
 
@@ -102,6 +118,7 @@ private:
     std::vector<PageSize> m_pageSizes;
     mutable std::string m_lastError;
     std::string m_currentPath;
+    bool m_watermarkFilterEnabled{false};
 };
 
 } // namespace pdf

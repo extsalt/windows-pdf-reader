@@ -66,6 +66,11 @@ public:
     void SetOnPageChanged(PageChangedCallback cb) { m_onPageChanged = std::move(cb); }
     void SetOnZoomChanged(ZoomChangedCallback cb) { m_onZoomChanged = std::move(cb); }
 
+    // Watermark operations
+    void SetWatermarkFilter(bool enable);
+    [[nodiscard]] bool IsWatermarkFilterEnabled() const;
+    void ClearCacheAndRefresh();
+
     // Page metadata query
     [[nodiscard]] PageSize GetCurrentPageOriginalSize() const;
 
