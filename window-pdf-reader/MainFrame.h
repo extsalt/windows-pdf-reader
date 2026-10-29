@@ -16,6 +16,10 @@ public:
     bool OpenDocument(const wxString& filePath);
     void CloseDocument();
 
+    static bool RegisterShellContextMenu(wxString* errorMsg = nullptr);
+    static bool UnregisterShellContextMenu(wxString* errorMsg = nullptr);
+    static bool IsShellContextMenuRegistered();
+
 #ifdef __WXMSW__
 protected:
     WXLRESULT MSWWindowProc(WXUINT message, WXWPARAM wParam, WXLPARAM lParam) override;
@@ -50,6 +54,8 @@ private:
     void OnMenuToggleRemoveWatermark(wxCommandEvent& event);
     void OnMenuPurgeWatermarks(wxCommandEvent& event);
     void OnMenuSaveCleanedPdf(wxCommandEvent& event);
+    void OnMenuRegisterShell(wxCommandEvent& event);
+    void OnMenuUnregisterShell(wxCommandEvent& event);
 
     void OnMenuAbout(wxCommandEvent& event);
 
@@ -143,6 +149,8 @@ private:
         ID_TOOL_REMOVE_WATERMARK,
         ID_TOOL_PURGE_WATERMARKS,
         ID_TOOL_SAVE_CLEANED,
+        ID_TOOL_REGISTER_SHELL,
+        ID_TOOL_UNREGISTER_SHELL,
         ID_BTN_PREV,
         ID_BTN_NEXT,
         ID_BTN_ZOOM_OUT,

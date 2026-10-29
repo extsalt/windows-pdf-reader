@@ -45,6 +45,10 @@ Designed with an **extreme minimal Apple / VLC aesthetic** — no visual clutter
   - `Ctrl + Alt + W`: Permanently Purge Watermark Objects.
   - `Ctrl + Shift + S`: Save Cleaned PDF As.
   - Drag & Drop: Drop any `.pdf` directly into the window from Windows Explorer.
+- **Windows Explorer Right-Click Context Menu**:
+  - Right-click any file or PDF in Windows Explorer and choose **"Open with Windows PDF Reader"** (complete with application icon).
+  - Register or unregister at any time directly from the application (**Tools** -> **Add to Windows Explorer Context Menu**), command-line flags (`--register` / `--unregister`), or one-click PowerShell scripts.
+  - Zero administrator privileges required (stored under `HKEY_CURRENT_USER`).
 
 ---
 
@@ -64,6 +68,17 @@ If cloning for the first time, bootstrap dependencies and compile with one click
 # 2. Build Release x64
 .\build.ps1 -Configuration Release -Platform x64
 ```
+
+### 3. Windows Explorer Context Menu Integration
+Register the right-click "Open with Windows PDF Reader" menu option in Explorer without administrator privileges:
+```powershell
+# Register context menu (HKCU)
+.\register-context-menu.ps1
+
+# Or unregister anytime
+.\unregister-context-menu.ps1
+```
+*Note: You can also register or unregister directly from the application UI via **Tools** -> **Add to Windows Explorer Context Menu** / **Remove from Windows Explorer Context Menu**, or via CLI flags `window-pdf-reader.exe --register` / `--unregister`.*
 
 ---
 

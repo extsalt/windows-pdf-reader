@@ -1,6 +1,7 @@
 #include "MainFrame.h"
 #include <wx/numdlg.h>
 #include <wx/filename.h>
+#include <wx/stdpaths.h>
 #include <iomanip>
 #include <sstream>
 
@@ -8,6 +9,9 @@
 #include <windows.h>
 #include <uxtheme.h>
 #include <dwmapi.h>
+#include <shlobj.h>
+#pragma comment(lib, "shell32.lib")
+#pragma comment(lib, "advapi32.lib")
 #pragma comment(lib, "uxtheme.lib")
 #pragma comment(lib, "dwmapi.lib")
 
@@ -41,6 +45,8 @@ wxBEGIN_EVENT_TABLE(MainFrame, wxFrame)
     EVT_MENU(MainFrame::ID_TOOL_REMOVE_WATERMARK, MainFrame::OnMenuToggleRemoveWatermark)
     EVT_MENU(MainFrame::ID_TOOL_PURGE_WATERMARKS, MainFrame::OnMenuPurgeWatermarks)
     EVT_MENU(MainFrame::ID_TOOL_SAVE_CLEANED, MainFrame::OnMenuSaveCleanedPdf)
+    EVT_MENU(MainFrame::ID_TOOL_REGISTER_SHELL, MainFrame::OnMenuRegisterShell)
+    EVT_MENU(MainFrame::ID_TOOL_UNREGISTER_SHELL, MainFrame::OnMenuUnregisterShell)
 
     EVT_MENU(wxID_ABOUT, MainFrame::OnMenuAbout)
 
@@ -181,6 +187,9 @@ void MainFrame::SetupMenuBar() {
     menuTools->AppendSeparator();
     m_menuItemPurgeWatermarks = menuTools->Append(ID_TOOL_PURGE_WATERMARKS, "&Permanently Purge Watermark Objects\tCtrl+Alt+W", "Strip all watermark annotations, marked content, and translucent objects");
     m_menuItemSaveCleaned = menuTools->Append(ID_TOOL_SAVE_CLEANED, "&Save Cleaned PDF As...\tCtrl+Shift+S", "Export current cleaned PDF to a new file without watermarks");
+    menuTools->AppendSeparator();
+    menuTools->Append(ID_TOOL_REGISTER_SHELL, "&Add to Windows Explorer Context Menu", "Register 'Open with Windows PDF Reader' option for right-click in Explorer");
+    menuTools->Append(ID_TOOL_UNREGISTER_SHELL, "&Remove from Windows Explorer Context Menu", "Remove 'Open with Windows PDF Reader' option from Windows Explorer");
     menuBar->Append(menuTools, "&Tools");
 
     // Help
@@ -684,6 +693,177 @@ void MainFrame::OnMenuAbout(wxCommandEvent&) {
                  "Continuous page scrolling with subpixel rendering and minimal memory footprint.\n\n"
                  "Features built-in Watermark Suppression and DOM Object Purging tools.",
                  "About", wxOK | wxICON_INFORMATION, this);
+}
+
+void MainFrame::OnMenuRegisterShell(wxCommandEvent&) {
+    wxString errorMsg;
+    if (RegisterShellContextMenu(&errorMsg)) {
+        wxMessageBox("Windows Explorer context menu registered successfully!\n\n"
+                     "You can now right-click any file in Windows Explorer and choose\n"
+                     "'Open with Windows PDF Reader'.",
+                     "Context Menu Registered", wxOK | wxICON_INFORMATION, this);
+    } else {
+        wxMessageBox("Failed to register context menu:\n" + errorMsg,
+                     "Registration Error", wxOK | wxICON_ERROR, this);
+    }
+}
+
+void MainFrame::OnMenuUnregisterShell(wxCommandEvent&) {
+    wxString errorMsg;
+    if (UnregisterShellContextMenu(&errorMsg)) {
+        wxMessageBox("Windows Explorer context menu removed successfully.",
+                     "Context Menu Unregistered", wxOK | wxICON_INFORMATION, this);
+    } else {
+        wxMessageBox("Failed to unregister context menu:\n" + errorMsg,
+                     "Unregistration Error", wxOK | wxICON_ERROR, this);
+    }
+}
+
+bool MainFrame::RegisterShellContextMenu(wxString* errorMsg) {
+#ifdef __WXMSW__
+    const wxString exePath = wxStandardPaths::Get().GetExecutablePath();
+    if (exePath.empty()) {
+        if (errorMsg) *errorMsg = "Unable to determine executable path.";
+        return false;
+    }
+
+    const std::wstring wExe = exePath.ToStdWstring();
+    const std::wstring iconVal = std::wstring(L"\"") + wExe + L"\",0";
+    const std::wstring cmdVal = std::wstring(L"\"") + wExe + L"\" \"%1\"";
+    const std::wstring menuTitle = L"Open with Windows PDF Reader";
+
+    // 1. Context menu for all files (*)
+    LSTATUS status = RegSetKeyValueW(
+        HKEY_CURRENT_USER,
+        L"Software\\Classes\\*\\shell\\WindowsPdfReader",
+        nullptr,
+        REG_SZ,
+        menuTitle.c_str(),
+        static_cast<DWORD>((menuTitle.length() + 1) * sizeof(wchar_t))
+    );
+    if (status != ERROR_SUCCESS) {
+        if (errorMsg) *errorMsg = wxString::Format("Registry error %ld setting shell verb.", status);
+        return false;
+    }
+
+    RegSetKeyValueW(
+        HKEY_CURRENT_USER,
+        L"Software\\Classes\\*\\shell\\WindowsPdfReader",
+        L"Icon",
+        REG_SZ,
+        iconVal.c_str(),
+        static_cast<DWORD>((iconVal.length() + 1) * sizeof(wchar_t))
+    );
+
+    RegSetKeyValueW(
+        HKEY_CURRENT_USER,
+        L"Software\\Classes\\*\\shell\\WindowsPdfReader\\command",
+        nullptr,
+        REG_SZ,
+        cmdVal.c_str(),
+        static_cast<DWORD>((cmdVal.length() + 1) * sizeof(wchar_t))
+    );
+
+    // 2. Also register under SystemFileAssociations\.pdf
+    RegSetKeyValueW(
+        HKEY_CURRENT_USER,
+        L"Software\\Classes\\SystemFileAssociations\\.pdf\\shell\\WindowsPdfReader",
+        nullptr,
+        REG_SZ,
+        menuTitle.c_str(),
+        static_cast<DWORD>((menuTitle.length() + 1) * sizeof(wchar_t))
+    );
+
+    RegSetKeyValueW(
+        HKEY_CURRENT_USER,
+        L"Software\\Classes\\SystemFileAssociations\\.pdf\\shell\\WindowsPdfReader",
+        L"Icon",
+        REG_SZ,
+        iconVal.c_str(),
+        static_cast<DWORD>((iconVal.length() + 1) * sizeof(wchar_t))
+    );
+
+    RegSetKeyValueW(
+        HKEY_CURRENT_USER,
+        L"Software\\Classes\\SystemFileAssociations\\.pdf\\shell\\WindowsPdfReader\\command",
+        nullptr,
+        REG_SZ,
+        cmdVal.c_str(),
+        static_cast<DWORD>((cmdVal.length() + 1) * sizeof(wchar_t))
+    );
+
+    // 3. Register under Applications for Windows 'Open With' list
+    const std::wstring appFriendly = L"Windows PDF Reader";
+    RegSetKeyValueW(
+        HKEY_CURRENT_USER,
+        L"Software\\Classes\\Applications\\window-pdf-reader.exe",
+        L"FriendlyAppName",
+        REG_SZ,
+        appFriendly.c_str(),
+        static_cast<DWORD>((appFriendly.length() + 1) * sizeof(wchar_t))
+    );
+
+    RegSetKeyValueW(
+        HKEY_CURRENT_USER,
+        L"Software\\Classes\\Applications\\window-pdf-reader.exe\\DefaultIcon",
+        nullptr,
+        REG_SZ,
+        iconVal.c_str(),
+        static_cast<DWORD>((iconVal.length() + 1) * sizeof(wchar_t))
+    );
+
+    RegSetKeyValueW(
+        HKEY_CURRENT_USER,
+        L"Software\\Classes\\Applications\\window-pdf-reader.exe\\shell\\open\\command",
+        nullptr,
+        REG_SZ,
+        cmdVal.c_str(),
+        static_cast<DWORD>((cmdVal.length() + 1) * sizeof(wchar_t))
+    );
+
+    RegSetKeyValueW(
+        HKEY_CURRENT_USER,
+        L"Software\\Classes\\Applications\\window-pdf-reader.exe\\SupportedTypes",
+        L".pdf",
+        REG_SZ,
+        L"",
+        sizeof(wchar_t)
+    );
+
+    // Notify Windows Explorer of association change
+    SHChangeNotify(SHCNE_ASSOCCHANGED, SHCNF_IDLIST, nullptr, nullptr);
+    return true;
+#else
+    if (errorMsg) *errorMsg = "Shell registration is only supported on Windows.";
+    return false;
+#endif
+}
+
+bool MainFrame::UnregisterShellContextMenu(wxString* errorMsg) {
+#ifdef __WXMSW__
+    RegDeleteTreeW(HKEY_CURRENT_USER, L"Software\\Classes\\*\\shell\\WindowsPdfReader");
+    RegDeleteTreeW(HKEY_CURRENT_USER, L"Software\\Classes\\SystemFileAssociations\\.pdf\\shell\\WindowsPdfReader");
+    RegDeleteTreeW(HKEY_CURRENT_USER, L"Software\\Classes\\Applications\\window-pdf-reader.exe");
+
+    SHChangeNotify(SHCNE_ASSOCCHANGED, SHCNF_IDLIST, nullptr, nullptr);
+    return true;
+#else
+    if (errorMsg) *errorMsg = "Shell unregistration is only supported on Windows.";
+    return false;
+#endif
+}
+
+bool MainFrame::IsShellContextMenuRegistered() {
+#ifdef __WXMSW__
+    HKEY hKey = nullptr;
+    if (RegOpenKeyExW(HKEY_CURRENT_USER, L"Software\\Classes\\*\\shell\\WindowsPdfReader", 0, KEY_READ, &hKey) == ERROR_SUCCESS) {
+        RegCloseKey(hKey);
+        return true;
+    }
+    return false;
+#else
+    return false;
+#endif
 }
 
 void MainFrame::UpdateControlsState() {
