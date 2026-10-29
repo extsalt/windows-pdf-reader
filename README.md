@@ -34,7 +34,7 @@ Designed with an **extreme minimal Apple / VLC aesthetic** — no visual clutter
   - Mouse Wheel: Continuous vertical scroll across the entire document.
   - `Ctrl + Mouse Wheel`: Smooth zooming centered on viewport.
   - `Shift + Mouse Wheel`: Smooth horizontal scroll left / right across wide pages.
-  - **Middle Click & Drag (Chrome-style Autoscroll / Pan)**: Press or hold the middle mouse button (scroll wheel) and drag left, right, up, or down to smoothly pan the document in that direction with dynamic directional HUD indicator.
+  - **Middle Click & Drag (Autoscroll / Smooth Pan)**: Press or hold the middle mouse button (scroll wheel) and drag left, right, up, or down to smoothly pan the document with native directional arrow cursors.
   - `Space` / `Page Down`: Scroll down / Next page.
   - `Shift + Space` / `Page Up`: Scroll up / Previous page.
   - `Home` / `End`: First page / Last page.

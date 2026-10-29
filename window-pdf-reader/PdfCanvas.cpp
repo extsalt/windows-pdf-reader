@@ -556,66 +556,6 @@ void PdfCanvas::OnPaint(wxPaintEvent& /*event*/) {
         }
     }
 
-    // Draw Chrome-style autoscroll origin HUD if active
-    if (m_isAutoScrolling) {
-        const int anchorDocX = m_autoScrollOrigin.x + (curX * rateX);
-        const int anchorDocY = m_autoScrollOrigin.y + (curY * rateY);
-
-        const int dx = m_autoScrollCurrentPos.x - m_autoScrollOrigin.x;
-        const int dy = m_autoScrollCurrentPos.y - m_autoScrollOrigin.y;
-
-        constexpr int R = 15;
-
-        // Dark translucent circle with subtle 1px border
-        dc.SetBrush(wxBrush(wxColour(30, 30, 35)));
-        dc.SetPen(wxPen(wxColour(110, 110, 120), 1));
-        dc.DrawCircle(anchorDocX, anchorDocY, R);
-
-        // Center pivot dot
-        dc.SetBrush(wxBrush(wxColour(220, 220, 225)));
-        dc.SetPen(*wxTRANSPARENT_PEN);
-        dc.DrawCircle(anchorDocX, anchorDocY, 2);
-
-        // Highlight colors for directional arrows
-        const wxColour colActive(0, 160, 255);
-        const wxColour colInactive(140, 140, 150);
-
-        // North triangle (Up)
-        dc.SetBrush(wxBrush(dy < -8 ? colActive : colInactive));
-        wxPoint ptsN[3] = {
-            wxPoint(anchorDocX, anchorDocY - 11),
-            wxPoint(anchorDocX - 4, anchorDocY - 6),
-            wxPoint(anchorDocX + 4, anchorDocY - 6)
-        };
-        dc.DrawPolygon(3, ptsN);
-
-        // South triangle (Down)
-        dc.SetBrush(wxBrush(dy > 8 ? colActive : colInactive));
-        wxPoint ptsS[3] = {
-            wxPoint(anchorDocX, anchorDocY + 11),
-            wxPoint(anchorDocX - 4, anchorDocY + 6),
-            wxPoint(anchorDocX + 4, anchorDocY + 6)
-        };
-        dc.DrawPolygon(3, ptsS);
-
-        // West triangle (Left)
-        dc.SetBrush(wxBrush(dx < -8 ? colActive : colInactive));
-        wxPoint ptsW[3] = {
-            wxPoint(anchorDocX - 11, anchorDocY),
-            wxPoint(anchorDocX - 6, anchorDocY - 4),
-            wxPoint(anchorDocX - 6, anchorDocY + 4)
-        };
-        dc.DrawPolygon(3, ptsW);
-
-        // East triangle (Right)
-        dc.SetBrush(wxBrush(dx > 8 ? colActive : colInactive));
-        wxPoint ptsE[3] = {
-            wxPoint(anchorDocX + 11, anchorDocY),
-            wxPoint(anchorDocX + 6, anchorDocY - 4),
-            wxPoint(anchorDocX + 6, anchorDocY + 4)
-        };
-        dc.DrawPolygon(3, ptsE);
-    }
 }
 
 void PdfCanvas::OnSize(wxSizeEvent& event) {
@@ -926,7 +866,6 @@ void PdfCanvas::OnMiddleDown(wxMouseEvent& event) {
 
     SetCursor(wxCursor(wxCURSOR_SIZING));
     m_autoScrollTimer.Start(15);
-    Refresh();
 }
 
 void PdfCanvas::OnMiddleUp(wxMouseEvent& event) {
@@ -949,15 +888,13 @@ void PdfCanvas::OnMouseMove(wxMouseEvent& event) {
             m_autoScrollMoved = true;
         }
 
-        if (std::abs(dx) > std::abs(dy) * 2 && std::abs(dx) > 10) {
+        if (std::abs(dx) >= std::abs(dy) && std::abs(dx) > 8) {
             SetCursor(wxCursor(wxCURSOR_SIZEWE));
-        } else if (std::abs(dy) > std::abs(dx) * 2 && std::abs(dy) > 10) {
+        } else if (std::abs(dy) > std::abs(dx) && std::abs(dy) > 8) {
             SetCursor(wxCursor(wxCURSOR_SIZENS));
         } else {
             SetCursor(wxCursor(wxCURSOR_SIZING));
         }
-
-        Refresh();
         return;
     }
     event.Skip();
@@ -992,7 +929,6 @@ void PdfCanvas::StopAutoScroll() {
         ReleaseMouse();
     }
     SetCursor(wxNullCursor);
-    Refresh();
 }
 
 void PdfCanvas::OnAutoScrollTimer(wxTimerEvent& /*event*/) {
