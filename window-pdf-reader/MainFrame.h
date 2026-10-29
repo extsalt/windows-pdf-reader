@@ -11,10 +11,15 @@ namespace pdf {
 class MainFrame : public wxFrame {
 public:
     MainFrame(const wxString& title, const wxPoint& pos, const wxSize& size);
-    ~MainFrame() override = default;
+    ~MainFrame() override;
 
     bool OpenDocument(const wxString& filePath);
     void CloseDocument();
+
+#ifdef __WXMSW__
+protected:
+    WXLRESULT MSWWindowProc(WXUINT message, WXWPARAM wParam, WXLPARAM lParam) override;
+#endif
 
 private:
     void SetupMenuBar();
@@ -48,9 +53,32 @@ private:
 
     void OnMenuAbout(wxCommandEvent& event);
 
-    // Bottom Bar Click Handlers
+    // Edit / Search Menu Event Handlers
+    void OnMenuFind(wxCommandEvent& event);
+    void OnMenuFindNext(wxCommandEvent& event);
+    void OnMenuFindPrev(wxCommandEvent& event);
+    void OnEscape(wxCommandEvent& event);
+
+    // Floating Bar Methods & Click Handlers
+    void UpdateFloatingBarPosition();
+    void ShowMenuBar(bool show);
+    void ShowFloatingBar();
+    void HideFloatingBar();
+    void OnCanvasDoubleClicked();
+    void OnSize(wxSizeEvent& event);
     void OnPageLabelClicked(wxMouseEvent& event);
     void OnZoomLabelClicked(wxMouseEvent& event);
+
+    // Search Bar Methods & Handlers
+    void SetupFloatingSearchBar();
+    void UpdateSearchBarPosition();
+    void ShowSearchBar();
+    void HideSearchBar();
+    void OnSearchTextChanged(wxCommandEvent& event);
+    void OnSearchTextEnter(wxCommandEvent& event);
+    void OnSearchPrev();
+    void OnSearchNext();
+    void OnSearchClose();
 
     // UI State updates
     void UpdateControlsState();
@@ -81,11 +109,22 @@ private:
     wxButton* m_btnFit{nullptr};
     wxButton* m_btnRotate{nullptr};
 
+    // Minimal floating search HUD bar
+    wxPanel* m_searchBar{nullptr};
+    wxTextCtrl* m_searchCtrl{nullptr};
+    wxStaticText* m_searchCountLabel{nullptr};
+    wxButton* m_btnSearchPrev{nullptr};
+    wxButton* m_btnSearchNext{nullptr};
+    wxButton* m_btnSearchClose{nullptr};
+
     // Tools menu item pointers
     wxMenuItem* m_menuItemRemoveWatermark{nullptr};
     wxMenuItem* m_menuItemPurgeWatermarks{nullptr};
     wxMenuItem* m_menuItemSaveCleaned{nullptr};
 
+#ifdef __WXMSW__
+    WXHMENU m_savedMenuHandle{nullptr};
+#endif
     wxString m_currentFilePath;
 
     enum MenuIds {
@@ -110,7 +149,14 @@ private:
         ID_BTN_ZOOM_OUT,
         ID_BTN_ZOOM_IN,
         ID_BTN_FIT,
-        ID_BTN_ROTATE
+        ID_BTN_ROTATE,
+        ID_FIND,
+        ID_FIND_NEXT,
+        ID_FIND_PREV,
+        ID_ESCAPE,
+        ID_BTN_SEARCH_PREV,
+        ID_BTN_SEARCH_NEXT,
+        ID_BTN_SEARCH_CLOSE
     };
 
     wxDECLARE_EVENT_TABLE();

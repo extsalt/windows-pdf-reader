@@ -27,10 +27,19 @@ struct PageRect {
     }
 };
 
+struct CanvasSearchMatch {
+    int pageIndex{0};
+    int matchIndex{0};
+    std::vector<SearchRect> rectsPoints;
+    std::vector<wxRect> deviceRects;
+    wxRect boundingBox;
+};
+
 class PdfCanvas : public wxScrolledCanvas {
 public:
     using PageChangedCallback = std::function<void(int currentPage, int totalPages)>;
     using ZoomChangedCallback = std::function<void(double zoomFactor, ZoomMode mode)>;
+    using DoubleClickCallback = std::function<void()>;
 
     explicit PdfCanvas(wxWindow* parent, std::shared_ptr<PdfEngine> engine);
     ~PdfCanvas() override = default;
@@ -65,11 +74,22 @@ public:
     // Callbacks for UI updates
     void SetOnPageChanged(PageChangedCallback cb) { m_onPageChanged = std::move(cb); }
     void SetOnZoomChanged(ZoomChangedCallback cb) { m_onZoomChanged = std::move(cb); }
+    void SetOnDoubleClicked(DoubleClickCallback cb) { m_onDoubleClicked = std::move(cb); }
 
     // Watermark operations
     void SetWatermarkFilter(bool enable);
     [[nodiscard]] bool IsWatermarkFilterEnabled() const;
     void ClearCacheAndRefresh();
+
+    // Search & Highlight operations
+    void SetSearchResults(const std::vector<SearchMatch>& matches);
+    void ClearSearchResults();
+    [[nodiscard]] int GetSearchMatchCount() const noexcept { return static_cast<int>(m_searchMatches.size()); }
+    [[nodiscard]] int GetCurrentSearchMatchIndex() const noexcept { return m_currentMatchIndex; }
+    bool NextSearchMatch();
+    bool PreviousSearchMatch();
+    bool SelectSearchMatch(int index);
+    void ScrollToCurrentMatch();
 
     // Page metadata query
     [[nodiscard]] PageSize GetCurrentPageOriginalSize() const;
@@ -78,11 +98,13 @@ private:
     void OnPaint(wxPaintEvent& event);
     void OnSize(wxSizeEvent& event);
     void OnMouseWheel(wxMouseEvent& event);
+    void OnLeftDClick(wxMouseEvent& event);
     void OnKeyDown(wxKeyEvent& event);
     void OnScroll(wxScrollWinEvent& event);
     void OnContextMenu(wxContextMenuEvent& event);
 
     void RecomputeContinuousLayout();
+    void RecomputeSearchDeviceRects();
     void UpdateCurrentPageFromScroll();
     wxBitmap GetOrRenderPageBitmap(int pageIndex, int targetWidth, int targetHeight);
     void ClearBitmapCache();
@@ -108,6 +130,11 @@ private:
 
     PageChangedCallback m_onPageChanged;
     ZoomChangedCallback m_onZoomChanged;
+    DoubleClickCallback m_onDoubleClicked;
+
+    // Search and highlight state
+    std::vector<CanvasSearchMatch> m_searchMatches;
+    int m_currentMatchIndex{-1};
 
     // Lean Apple-like padding and margins (no bulky bezels)
     static constexpr int PADDING_X = 8;

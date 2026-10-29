@@ -43,12 +43,18 @@ wxBEGIN_EVENT_TABLE(MainFrame, wxFrame)
     EVT_MENU(MainFrame::ID_TOOL_SAVE_CLEANED, MainFrame::OnMenuSaveCleanedPdf)
 
     EVT_MENU(wxID_ABOUT, MainFrame::OnMenuAbout)
+
+    EVT_MENU(MainFrame::ID_FIND, MainFrame::OnMenuFind)
+    EVT_MENU(MainFrame::ID_FIND_NEXT, MainFrame::OnMenuFindNext)
+    EVT_MENU(MainFrame::ID_FIND_PREV, MainFrame::OnMenuFindPrev)
+    EVT_MENU(MainFrame::ID_ESCAPE, MainFrame::OnEscape)
 wxEND_EVENT_TABLE()
 
 MainFrame::MainFrame(const wxString& title, const wxPoint& pos, const wxSize& size)
     : wxFrame(nullptr, wxID_ANY, title, pos, size),
       m_engine(std::make_shared<PdfEngine>()) {
 
+    SetIcon(wxICON(app_icon));
     SetMinSize(wxSize(640, 480));
     SetBackgroundColour(wxColour(24, 24, 27));
 
@@ -58,6 +64,7 @@ MainFrame::MainFrame(const wxString& title, const wxPoint& pos, const wxSize& si
     // Setup minimal UI
     SetupMenuBar();
     SetupMinimalBottomBar();
+    SetupFloatingSearchBar();
     SetupDropTarget();
 
     // Attach callbacks from canvas
@@ -70,10 +77,13 @@ MainFrame::MainFrame(const wxString& title, const wxPoint& pos, const wxSize& si
         UpdateBottomBar(m_canvas->GetCurrentPage() + 1, m_canvas->GetTotalPages(), factor, mode);
     });
 
-    // Layout: Canvas takes entire window, minimal 34px bar at bottom
+    m_canvas->SetOnDoubleClicked([this]() {
+        OnCanvasDoubleClicked();
+    });
+
+    // Layout: Canvas takes entire window, floating bar hovers over it
     auto* rootSizer = new wxBoxSizer(wxVERTICAL);
     rootSizer->Add(m_canvas, 1, wxEXPAND);
-    rootSizer->Add(m_bottomBar, 0, wxEXPAND);
     SetSizer(rootSizer);
 
 #ifdef __WXMSW__
@@ -87,11 +97,38 @@ MainFrame::MainFrame(const wxString& title, const wxPoint& pos, const wxSize& si
         HWND canvasHwnd = static_cast<HWND>(m_canvas->GetHWND());
         if (canvasHwnd) {
             SetWindowTheme(canvasHwnd, L"DarkMode_Explorer", nullptr);
+            LONG_PTR style = GetWindowLongPtr(canvasHwnd, GWL_STYLE);
+            SetWindowLongPtr(canvasHwnd, GWL_STYLE, style | WS_CLIPSIBLINGS);
+        }
+    }
+    if (m_bottomBar) {
+        HWND barHwnd = static_cast<HWND>(m_bottomBar->GetHWND());
+        if (barHwnd) {
+            SetWindowTheme(barHwnd, L"DarkMode_Explorer", nullptr);
+            LONG_PTR style = GetWindowLongPtr(barHwnd, GWL_STYLE);
+            SetWindowLongPtr(barHwnd, GWL_STYLE, style | WS_CLIPSIBLINGS);
         }
     }
 #endif
 
+    Bind(wxEVT_SIZE, &MainFrame::OnSize, this);
+
     UpdateControlsState();
+    UpdateFloatingBarPosition();
+    UpdateSearchBarPosition();
+    m_bottomBar->Show(false);
+    if (m_searchBar) {
+        m_searchBar->Show(false);
+    }
+}
+
+MainFrame::~MainFrame() {
+#ifdef __WXMSW__
+    HWND hwnd = static_cast<HWND>(GetHWND());
+    if (hwnd && m_savedMenuHandle && !::GetMenu(hwnd)) {
+        ::SetMenu(hwnd, static_cast<HMENU>(m_savedMenuHandle));
+    }
+#endif
 }
 
 void MainFrame::SetupMenuBar() {
@@ -106,6 +143,13 @@ void MainFrame::SetupMenuBar() {
     menuFile->AppendSeparator();
     menuFile->Append(wxID_EXIT, "E&xit\tAlt+F4", "Exit application");
     menuBar->Append(menuFile, "&File");
+
+    // Edit
+    auto* menuEdit = new wxMenu();
+    menuEdit->Append(ID_FIND, "&Find...	Ctrl+F", "Find text in document");
+    menuEdit->Append(ID_FIND_NEXT, "Find &Next	F3", "Find next occurrence");
+    menuEdit->Append(ID_FIND_PREV, "Find &Previous	Shift+F3", "Find previous occurrence");
+    menuBar->Append(menuEdit, "&Edit");
 
     // View
     auto* menuView = new wxMenu();
@@ -145,11 +189,21 @@ void MainFrame::SetupMenuBar() {
     menuBar->Append(menuHelp, "&Help");
 
     SetMenuBar(menuBar);
+#ifdef __WXMSW__
+    HWND hwnd = static_cast<HWND>(GetHWND());
+    if (hwnd) {
+        m_savedMenuHandle = static_cast<WXHMENU>(::GetMenu(hwnd));
+    }
+#endif
 
     // Keyboard Accelerators
     wxAcceleratorEntry entries[] = {
         { wxACCEL_CTRL, 'O', wxID_OPEN },
         { wxACCEL_CTRL, 'W', wxID_CLOSE },
+        { wxACCEL_CTRL, 'F', ID_FIND },
+        { wxACCEL_NORMAL, WXK_F3, ID_FIND_NEXT },
+        { wxACCEL_SHIFT, WXK_F3, ID_FIND_PREV },
+        { wxACCEL_NORMAL, WXK_ESCAPE, ID_ESCAPE },
         { wxACCEL_CTRL, 'G', ID_GOTO_PAGE },
         { wxACCEL_CTRL, '+', ID_ZOOM_IN },
         { wxACCEL_CTRL, '=', ID_ZOOM_IN },
@@ -167,14 +221,23 @@ void MainFrame::SetupMenuBar() {
 }
 
 void MainFrame::SetupMinimalBottomBar() {
-    // 34px height dark minimal bar (Apple / VLC style)
-    m_bottomBar = new wxPanel(this, wxID_ANY, wxDefaultPosition, wxSize(-1, 34));
-    m_bottomBar->SetBackgroundColour(wxColour(22, 22, 24));
+    // 36px height dark floating pill HUD bar (Apple / VLC style)
+    m_bottomBar = new wxPanel(this, wxID_ANY, wxDefaultPosition, wxSize(460, 36), wxBORDER_NONE);
+    m_bottomBar->SetBackgroundColour(wxColour(24, 24, 28));
+
+    // Custom paint event for sleek 1px rounded border and subtle dark background
+    m_bottomBar->Bind(wxEVT_PAINT, [this](wxPaintEvent&) {
+        wxPaintDC dc(m_bottomBar);
+        const wxSize sz = m_bottomBar->GetSize();
+        dc.SetBrush(wxBrush(wxColour(24, 24, 28)));
+        dc.SetPen(wxPen(wxColour(65, 65, 75), 1));
+        dc.DrawRoundedRectangle(0, 0, sz.GetWidth(), sz.GetHeight(), 6);
+    });
 
     auto* barSizer = new wxBoxSizer(wxHORIZONTAL);
 
     // Left: Document Name
-    m_fileLabel = new wxStaticText(m_bottomBar, wxID_ANY, "Ready", wxDefaultPosition, wxDefaultSize, wxST_ELLIPSIZE_END);
+    m_fileLabel = new wxStaticText(m_bottomBar, wxID_ANY, "Ready", wxDefaultPosition, wxSize(90, -1), wxST_ELLIPSIZE_END);
     m_fileLabel->SetForegroundColour(wxColour(140, 140, 145));
     wxFont infoFont = m_fileLabel->GetFont();
     infoFont.SetPointSize(9);
@@ -184,8 +247,8 @@ void MainFrame::SetupMinimalBottomBar() {
     auto* centerSizer = new wxBoxSizer(wxHORIZONTAL);
 
     auto makeFlatButton = [this](const wxString& label, int id, const wxString& tip) {
-        auto* btn = new wxButton(m_bottomBar, id, label, wxDefaultPosition, wxSize(28, 22), wxBORDER_NONE);
-        btn->SetBackgroundColour(wxColour(34, 34, 38));
+        auto* btn = new wxButton(m_bottomBar, id, label, wxDefaultPosition, wxSize(24, 22), wxBORDER_NONE);
+        btn->SetBackgroundColour(wxColour(36, 36, 42));
         btn->SetForegroundColour(wxColour(230, 230, 235));
         btn->SetToolTip(tip);
         return btn;
@@ -199,14 +262,14 @@ void MainFrame::SetupMinimalBottomBar() {
     m_pageLabel->SetToolTip("Click to jump to page (Ctrl+G)");
     m_btnNext = makeFlatButton(">", ID_BTN_NEXT, "Next Page (PageDown)");
 
-    centerSizer->Add(m_btnPrev, 0, wxALIGN_CENTER_VERTICAL | wxRIGHT, 6);
-    centerSizer->Add(m_pageLabel, 0, wxALIGN_CENTER_VERTICAL | wxLEFT | wxRIGHT, 6);
-    centerSizer->Add(m_btnNext, 0, wxALIGN_CENTER_VERTICAL | wxLEFT, 6);
+    centerSizer->Add(m_btnPrev, 0, wxALIGN_CENTER_VERTICAL | wxRIGHT, 4);
+    centerSizer->Add(m_pageLabel, 0, wxALIGN_CENTER_VERTICAL | wxLEFT | wxRIGHT, 4);
+    centerSizer->Add(m_btnNext, 0, wxALIGN_CENTER_VERTICAL | wxLEFT, 4);
 
     // Right: Zoom and Rotate controls
     auto* rightSizer = new wxBoxSizer(wxHORIZONTAL);
     m_btnZoomOut = makeFlatButton("-", ID_BTN_ZOOM_OUT, "Zoom Out (Ctrl+-)");
-    m_zoomLabel = new wxStaticText(m_bottomBar, wxID_ANY, "Fit Width", wxDefaultPosition, wxSize(68, -1), wxALIGN_CENTRE_HORIZONTAL);
+    m_zoomLabel = new wxStaticText(m_bottomBar, wxID_ANY, "Fit Width", wxDefaultPosition, wxSize(66, -1), wxALIGN_CENTRE_HORIZONTAL);
     m_zoomLabel->SetForegroundColour(wxColour(180, 180, 185));
     m_zoomLabel->SetFont(infoFont);
     m_zoomLabel->SetCursor(wxCursor(wxCURSOR_HAND));
@@ -222,10 +285,11 @@ void MainFrame::SetupMinimalBottomBar() {
     rightSizer->Add(m_btnFit, 0, wxALIGN_CENTER_VERTICAL | wxRIGHT, 4);
     rightSizer->Add(m_btnRotate, 0, wxALIGN_CENTER_VERTICAL);
 
-    // Assemble Bottom Bar: [Left Filename] --- [Center Page Navigation] --- [Right Zoom/Tools]
+    // Assemble Floating Bar
     barSizer->AddSpacer(12);
-    barSizer->Add(m_fileLabel, 1, wxALIGN_CENTER_VERTICAL);
-    barSizer->Add(centerSizer, 0, wxALIGN_CENTER);
+    barSizer->Add(m_fileLabel, 0, wxALIGN_CENTER_VERTICAL);
+    barSizer->AddStretchSpacer(1);
+    barSizer->Add(centerSizer, 0, wxALIGN_CENTER_VERTICAL);
     barSizer->AddStretchSpacer(1);
     barSizer->Add(rightSizer, 0, wxALIGN_CENTER_VERTICAL);
     barSizer->AddSpacer(12);
@@ -233,10 +297,18 @@ void MainFrame::SetupMinimalBottomBar() {
     m_bottomBar->SetSizer(barSizer);
 
     // Bind bottom bar events
-    m_btnPrev->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) { m_canvas->PreviousPage(); });
-    m_btnNext->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) { m_canvas->NextPage(); });
-    m_btnZoomOut->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) { m_canvas->ZoomOut(); });
-    m_btnZoomIn->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) { m_canvas->ZoomIn(); });
+    m_btnPrev->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) {
+        m_canvas->PreviousPage();
+    });
+    m_btnNext->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) {
+        m_canvas->NextPage();
+    });
+    m_btnZoomOut->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) {
+        m_canvas->ZoomOut();
+    });
+    m_btnZoomIn->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) {
+        m_canvas->ZoomIn();
+    });
     m_btnFit->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) {
         if (m_canvas->GetZoomMode() == ZoomMode::FitWidth) {
             m_canvas->SetZoomMode(ZoomMode::FitPage);
@@ -244,10 +316,122 @@ void MainFrame::SetupMinimalBottomBar() {
             m_canvas->SetZoomMode(ZoomMode::FitWidth);
         }
     });
-    m_btnRotate->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) { m_canvas->RotateClockwise(); });
+    m_btnRotate->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) {
+        m_canvas->RotateClockwise();
+    });
 
-    m_pageLabel->Bind(wxEVT_LEFT_UP, &MainFrame::OnPageLabelClicked, this);
-    m_zoomLabel->Bind(wxEVT_LEFT_UP, &MainFrame::OnZoomLabelClicked, this);
+    m_pageLabel->Bind(wxEVT_LEFT_UP, [this](wxMouseEvent& evt) {
+        OnPageLabelClicked(evt);
+    });
+    m_zoomLabel->Bind(wxEVT_LEFT_UP, [this](wxMouseEvent& evt) {
+        OnZoomLabelClicked(evt);
+    });
+
+    // Double-clicking the bottom bar or file label toggles/hides bars
+    auto onBottomBarDClick = [this](wxMouseEvent&) {
+        OnCanvasDoubleClicked();
+    };
+    m_bottomBar->Bind(wxEVT_LEFT_DCLICK, onBottomBarDClick);
+    m_fileLabel->Bind(wxEVT_LEFT_DCLICK, onBottomBarDClick);
+}
+
+void MainFrame::UpdateFloatingBarPosition() {
+    if (!m_bottomBar) return;
+    const wxSize clientSize = GetClientSize();
+    const wxSize barSize = m_bottomBar->GetSize();
+    const int x = std::max(8, (clientSize.GetWidth() - barSize.GetWidth()) / 2);
+    const int y = std::max(8, clientSize.GetHeight() - barSize.GetHeight() - 24);
+    m_bottomBar->SetPosition(wxPoint(x, y));
+    m_bottomBar->Raise();
+}
+
+void MainFrame::ShowMenuBar(bool show) {
+#ifdef __WXMSW__
+    HWND hwnd = static_cast<HWND>(GetHWND());
+    if (!hwnd) return;
+
+    if (show) {
+        if (m_savedMenuHandle && !::GetMenu(hwnd)) {
+            ::SetMenu(hwnd, static_cast<HMENU>(m_savedMenuHandle));
+            ::DrawMenuBar(hwnd);
+            SendSizeEvent();
+        }
+    } else {
+        HMENU curMenu = ::GetMenu(hwnd);
+        if (curMenu) {
+            m_savedMenuHandle = static_cast<WXHMENU>(curMenu);
+            ::SetMenu(hwnd, nullptr);
+            ::DrawMenuBar(hwnd);
+            SendSizeEvent();
+        }
+    }
+#endif
+}
+
+void MainFrame::ShowFloatingBar() {
+    ShowMenuBar(true);
+    if (!m_bottomBar) return;
+    UpdateFloatingBarPosition();
+    m_bottomBar->Show(true);
+    m_bottomBar->Raise();
+    m_bottomBar->Refresh();
+}
+
+void MainFrame::HideFloatingBar() {
+    if (m_bottomBar) {
+        m_bottomBar->Show(false);
+    }
+    // In read mode (when a document is loaded), hide menu bar as well
+    if (m_engine && m_engine->IsLoaded()) {
+        ShowMenuBar(false);
+    }
+    if (m_canvas) {
+        m_canvas->Refresh();
+    }
+}
+
+void MainFrame::OnCanvasDoubleClicked() {
+    if (!m_engine || !m_engine->IsLoaded()) {
+        wxCommandEvent dummy;
+        OnMenuOpen(dummy);
+        return;
+    }
+
+    bool barShown = (m_bottomBar && m_bottomBar->IsShown());
+#ifdef __WXMSW__
+    HWND hwnd = static_cast<HWND>(GetHWND());
+    bool menuShown = hwnd ? (::GetMenu(hwnd) != nullptr) : true;
+#else
+    bool menuShown = barShown;
+#endif
+
+    if (barShown || menuShown) {
+        HideFloatingBar();
+    } else {
+        ShowFloatingBar();
+    }
+}
+
+#ifdef __WXMSW__
+WXLRESULT MainFrame::MSWWindowProc(WXUINT message, WXWPARAM wParam, WXLPARAM lParam) {
+    if (message == WM_NCLBUTTONDBLCLK && wParam == HTMENU) {
+        if (m_engine && m_engine->IsLoaded()) {
+            OnCanvasDoubleClicked();
+            return 0;
+        }
+    }
+    return wxFrame::MSWWindowProc(message, wParam, lParam);
+}
+#endif
+
+void MainFrame::OnSize(wxSizeEvent& event) {
+    event.Skip();
+    if (m_bottomBar) {
+        UpdateFloatingBarPosition();
+    }
+    if (m_searchBar) {
+        UpdateSearchBarPosition();
+    }
 }
 
 void MainFrame::SetupDropTarget() {
@@ -263,6 +447,15 @@ bool MainFrame::FileDropTarget::OnDropFiles(wxCoord, wxCoord, const wxArrayStrin
 
 bool MainFrame::OpenDocument(const wxString& filePath) {
     if (filePath.empty()) return false;
+
+    if (m_searchBar) {
+        m_searchBar->Show(false);
+        m_searchCtrl->Clear();
+        m_searchCountLabel->SetLabel("");
+    }
+    if (m_canvas) {
+        m_canvas->ClearSearchResults();
+    }
 
     wxBeginBusyCursor();
     const bool success = m_engine->LoadFromFile(std::string(filePath.ToUTF8()));
@@ -281,16 +474,32 @@ bool MainFrame::OpenDocument(const wxString& filePath) {
 
     m_canvas->OnDocumentOpened();
     UpdateControlsState();
+    ShowFloatingBar();
     return true;
 }
 
 void MainFrame::CloseDocument() {
+    if (m_searchBar) {
+        m_searchBar->Show(false);
+        m_searchCtrl->Clear();
+        m_searchCountLabel->SetLabel("");
+    }
+    if (m_canvas) {
+        m_canvas->ClearSearchResults();
+    }
     m_engine->Close();
     m_currentFilePath.clear();
     SetTitle("PDF Reader");
     m_canvas->OnDocumentClosed();
     UpdateControlsState();
     UpdateBottomBar(0, 0, 1.0, ZoomMode::FitWidth);
+    ShowMenuBar(true);
+    if (m_bottomBar) {
+        m_bottomBar->Show(false);
+    }
+    if (m_canvas) {
+        m_canvas->Refresh();
+    }
 }
 
 void MainFrame::OnMenuOpen(wxCommandEvent&) {
@@ -545,6 +754,237 @@ void MainFrame::UpdateBottomBar(int currentPage, int totalPages, double zoomFact
 
     if (m_bottomBar) {
         m_bottomBar->Layout();
+        UpdateFloatingBarPosition();
+    }
+}
+
+void MainFrame::SetupFloatingSearchBar() {
+    // 36px height dark floating search HUD bar
+    m_searchBar = new wxPanel(this, wxID_ANY, wxDefaultPosition, wxSize(330, 36), wxBORDER_NONE);
+    m_searchBar->SetBackgroundColour(wxColour(24, 24, 28));
+
+    // Custom paint event for sleek 1px rounded border and subtle dark background
+    m_searchBar->Bind(wxEVT_PAINT, [this](wxPaintEvent&) {
+        wxPaintDC dc(m_searchBar);
+        const wxSize sz = m_searchBar->GetSize();
+        dc.SetBrush(wxBrush(wxColour(24, 24, 28)));
+        dc.SetPen(wxPen(wxColour(65, 65, 75), 1));
+        dc.DrawRoundedRectangle(0, 0, sz.GetWidth(), sz.GetHeight(), 6);
+    });
+
+    auto* barSizer = new wxBoxSizer(wxHORIZONTAL);
+
+    // Search input text box
+    m_searchCtrl = new wxTextCtrl(m_searchBar, wxID_ANY, "", wxDefaultPosition, wxSize(130, 22), wxTE_PROCESS_ENTER | wxBORDER_SIMPLE);
+    m_searchCtrl->SetBackgroundColour(wxColour(36, 36, 42));
+    m_searchCtrl->SetForegroundColour(wxColour(240, 240, 245));
+    m_searchCtrl->SetHint("Find in document...");
+    wxFont searchFont = m_searchCtrl->GetFont();
+    searchFont.SetPointSize(9);
+    m_searchCtrl->SetFont(searchFont);
+
+    // Count label (e.g. "0/0" or "3/15")
+    m_searchCountLabel = new wxStaticText(m_searchBar, wxID_ANY, "", wxDefaultPosition, wxSize(65, -1), wxALIGN_CENTER_HORIZONTAL);
+    m_searchCountLabel->SetForegroundColour(wxColour(160, 160, 165));
+    wxFont countFont = m_searchCountLabel->GetFont();
+    countFont.SetPointSize(9);
+    m_searchCountLabel->SetFont(countFont);
+
+    auto makeSearchButton = [this](const wxString& label, int id, const wxString& tip) {
+        auto* btn = new wxButton(m_searchBar, id, label, wxDefaultPosition, wxSize(24, 22), wxBORDER_NONE);
+        btn->SetBackgroundColour(wxColour(36, 36, 42));
+        btn->SetForegroundColour(wxColour(230, 230, 235));
+        btn->SetToolTip(tip);
+#ifdef __WXMSW__
+        HWND h = static_cast<HWND>(btn->GetHWND());
+        if (h) {
+            SetWindowTheme(h, L"DarkMode_Explorer", nullptr);
+        }
+#endif
+        return btn;
+    };
+
+    m_btnSearchPrev = makeSearchButton("<", ID_BTN_SEARCH_PREV, "Previous match (Shift+Enter, Shift+F3)");
+    m_btnSearchNext = makeSearchButton(">", ID_BTN_SEARCH_NEXT, "Next match (Enter, F3)");
+    m_btnSearchClose = makeSearchButton("X", ID_BTN_SEARCH_CLOSE, "Close search (Esc)");
+
+    m_btnSearchPrev->Enable(false);
+    m_btnSearchNext->Enable(false);
+
+    barSizer->AddSpacer(8);
+    barSizer->Add(m_searchCtrl, 0, wxALIGN_CENTER_VERTICAL);
+    barSizer->AddSpacer(4);
+    barSizer->Add(m_searchCountLabel, 0, wxALIGN_CENTER_VERTICAL);
+    barSizer->AddSpacer(4);
+    barSizer->Add(m_btnSearchPrev, 0, wxALIGN_CENTER_VERTICAL | wxRIGHT, 2);
+    barSizer->Add(m_btnSearchNext, 0, wxALIGN_CENTER_VERTICAL | wxRIGHT, 4);
+    barSizer->Add(m_btnSearchClose, 0, wxALIGN_CENTER_VERTICAL);
+    barSizer->AddSpacer(8);
+
+    m_searchBar->SetSizer(barSizer);
+
+#ifdef __WXMSW__
+    HWND barHwnd = static_cast<HWND>(m_searchBar->GetHWND());
+    if (barHwnd) {
+        SetWindowTheme(barHwnd, L"DarkMode_Explorer", nullptr);
+        LONG_PTR style = GetWindowLongPtr(barHwnd, GWL_STYLE);
+        SetWindowLongPtr(barHwnd, GWL_STYLE, style | WS_CLIPSIBLINGS);
+    }
+    HWND textHwnd = static_cast<HWND>(m_searchCtrl->GetHWND());
+    if (textHwnd) {
+        SetWindowTheme(textHwnd, L"DarkMode_Explorer", nullptr);
+    }
+#endif
+
+    // Bind event handlers
+    m_searchCtrl->Bind(wxEVT_TEXT, &MainFrame::OnSearchTextChanged, this);
+    m_searchCtrl->Bind(wxEVT_TEXT_ENTER, &MainFrame::OnSearchTextEnter, this);
+    m_searchCtrl->Bind(wxEVT_KEY_DOWN, [this](wxKeyEvent& evt) {
+        if (evt.GetKeyCode() == WXK_ESCAPE) {
+            HideSearchBar();
+        } else if (evt.GetKeyCode() == WXK_RETURN || evt.GetKeyCode() == WXK_NUMPAD_ENTER) {
+            if (evt.ShiftDown()) {
+                OnSearchPrev();
+            } else {
+                OnSearchNext();
+            }
+        } else {
+            evt.Skip();
+        }
+    });
+
+    m_btnSearchPrev->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) { OnSearchPrev(); });
+    m_btnSearchNext->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) { OnSearchNext(); });
+    m_btnSearchClose->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) { OnSearchClose(); });
+
+    m_searchBar->Show(false);
+}
+
+void MainFrame::UpdateSearchBarPosition() {
+    if (!m_searchBar) return;
+    const wxSize clientSize = GetClientSize();
+    const wxSize barSize = m_searchBar->GetSize();
+    const int x = std::max(10, clientSize.GetWidth() - barSize.GetWidth() - 20);
+    const int y = 20;
+    m_searchBar->SetPosition(wxPoint(x, y));
+    m_searchBar->Raise();
+}
+
+void MainFrame::ShowSearchBar() {
+    if (!m_searchBar) return;
+    UpdateSearchBarPosition();
+    m_searchBar->Show(true);
+    m_searchBar->Raise();
+    m_searchBar->Refresh();
+
+    m_searchCtrl->SetFocus();
+    m_searchCtrl->SelectAll();
+
+    const wxString query = m_searchCtrl->GetValue();
+    if (!query.empty() && m_engine && m_engine->IsLoaded()) {
+        wxCommandEvent dummy;
+        OnSearchTextChanged(dummy);
+    }
+}
+
+void MainFrame::HideSearchBar() {
+    if (!m_searchBar) return;
+    m_searchBar->Show(false);
+    if (m_canvas) {
+        m_canvas->ClearSearchResults();
+        m_canvas->SetFocus();
+    }
+}
+
+void MainFrame::OnSearchTextChanged(wxCommandEvent& /*event*/) {
+    if (!m_engine || !m_engine->IsLoaded()) {
+        m_searchCountLabel->SetLabel("");
+        m_btnSearchPrev->Enable(false);
+        m_btnSearchNext->Enable(false);
+        return;
+    }
+
+    const wxString query = m_searchCtrl->GetValue();
+    if (query.empty()) {
+        m_canvas->ClearSearchResults();
+        m_searchCountLabel->SetLabel("");
+        m_btnSearchPrev->Enable(false);
+        m_btnSearchNext->Enable(false);
+        return;
+    }
+
+    std::vector<SearchMatch> matches = m_engine->SearchText(query.ToStdWstring(), false);
+    m_canvas->SetSearchResults(matches);
+
+    const int total = static_cast<int>(matches.size());
+    if (total == 0) {
+        m_searchCountLabel->SetLabel("0 of 0");
+        m_btnSearchPrev->Enable(false);
+        m_btnSearchNext->Enable(false);
+    } else {
+        const int cur = m_canvas->GetCurrentSearchMatchIndex() + 1;
+        m_searchCountLabel->SetLabel(wxString::Format("%d of %d", cur, total));
+        m_btnSearchPrev->Enable(true);
+        m_btnSearchNext->Enable(true);
+    }
+    m_searchBar->Layout();
+}
+
+void MainFrame::OnSearchTextEnter(wxCommandEvent& /*event*/) {
+    if (wxGetKeyState(WXK_SHIFT)) {
+        OnSearchPrev();
+    } else {
+        OnSearchNext();
+    }
+}
+
+void MainFrame::OnSearchPrev() {
+    if (!m_canvas || m_canvas->GetSearchMatchCount() == 0) return;
+    m_canvas->PreviousSearchMatch();
+    const int cur = m_canvas->GetCurrentSearchMatchIndex() + 1;
+    const int total = m_canvas->GetSearchMatchCount();
+    m_searchCountLabel->SetLabel(wxString::Format("%d of %d", cur, total));
+}
+
+void MainFrame::OnSearchNext() {
+    if (!m_canvas || m_canvas->GetSearchMatchCount() == 0) return;
+    m_canvas->NextSearchMatch();
+    const int cur = m_canvas->GetCurrentSearchMatchIndex() + 1;
+    const int total = m_canvas->GetSearchMatchCount();
+    m_searchCountLabel->SetLabel(wxString::Format("%d of %d", cur, total));
+}
+
+void MainFrame::OnSearchClose() {
+    HideSearchBar();
+}
+
+void MainFrame::OnMenuFind(wxCommandEvent& /*event*/) {
+    ShowSearchBar();
+}
+
+void MainFrame::OnMenuFindNext(wxCommandEvent& /*event*/) {
+    if (m_searchBar && !m_searchBar->IsShown()) {
+        ShowSearchBar();
+    } else {
+        OnSearchNext();
+    }
+}
+
+void MainFrame::OnMenuFindPrev(wxCommandEvent& /*event*/) {
+    if (m_searchBar && !m_searchBar->IsShown()) {
+        ShowSearchBar();
+    } else {
+        OnSearchPrev();
+    }
+}
+
+void MainFrame::OnEscape(wxCommandEvent& /*event*/) {
+    if (m_searchBar && m_searchBar->IsShown()) {
+        HideSearchBar();
+        return;
+    }
+    if (m_bottomBar && m_bottomBar->IsShown()) {
+        HideFloatingBar();
     }
 }
 

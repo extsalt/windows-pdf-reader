@@ -1,0 +1,10 @@
+// resources.rc - Windows Application Resources for Minimal Footprint PDF Reader
+
+// Main icon for Windows Explorer (ID 1 ensures Explorer displays it as the exe icon)
+1 ICON "app.ico"
+
+// Named icon for wxWidgets SetIcon(wxICON(app_icon))
+app_icon ICON "app.ico"
+
+// Standard wxWidgets MSW resources (cursors, standard icons)
+#include "wx/msw/wx.rc"

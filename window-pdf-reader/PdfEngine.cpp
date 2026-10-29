@@ -355,4 +355,84 @@ bool PdfEngine::SaveDocumentAs(const std::string& outputPath) const {
     return true;
 }
 
+std::vector<SearchMatch> PdfEngine::SearchText(const std::wstring& query, bool matchCase) const {
+    std::vector<SearchMatch> results;
+    if (!m_document || query.empty() || m_pageCount <= 0) {
+        return results;
+    }
+
+    const unsigned long flags = matchCase ? FPDF_MATCHCASE : 0;
+    const auto* findWhat = reinterpret_cast<FPDF_WIDESTRING>(query.c_str());
+
+    for (int pageIdx = 0; pageIdx < m_pageCount; ++pageIdx) {
+        ScopedPage page(FPDF_LoadPage(m_document.get(), pageIdx));
+        if (!page) continue;
+
+        ScopedTextPage textPage(FPDFText_LoadPage(page.get()));
+        if (!textPage) continue;
+
+        ScopedSearchContext sch(FPDFText_FindStart(textPage.get(), findWhat, flags, 0));
+        if (sch) {
+            while (FPDFText_FindNext(sch.get())) {
+                const int charIdx = FPDFText_GetSchResultIndex(sch.get());
+                const int charCnt = FPDFText_GetSchCount(sch.get());
+                if (charCnt <= 0) continue;
+
+                SearchMatch match;
+                match.pageIndex = pageIdx;
+                match.charIndex = charIdx;
+                match.charCount = charCnt;
+
+                const int rectCount = FPDFText_CountRects(textPage.get(), charIdx, charCnt);
+                if (rectCount > 0) {
+                    match.rectsPoints.reserve(rectCount);
+                    for (int r = 0; r < rectCount; ++r) {
+                        double left = 0, top = 0, right = 0, bottom = 0;
+                        if (FPDFText_GetRect(textPage.get(), r, &left, &top, &right, &bottom)) {
+                            match.rectsPoints.push_back({ left, top, right, bottom });
+                        }
+                    }
+                } else {
+                    for (int c = 0; c < charCnt; ++c) {
+                        double left = 0, right = 0, bottom = 0, top = 0;
+                        if (FPDFText_GetCharBox(textPage.get(), charIdx + c, &left, &right, &bottom, &top)) {
+                            match.rectsPoints.push_back({ left, top, right, bottom });
+                        }
+                    }
+                }
+
+                if (!match.rectsPoints.empty()) {
+                    results.push_back(std::move(match));
+                }
+            }
+        }
+    }
+
+    return results;
+}
+
+void PdfEngine::ConvertPointsToDevice(int pageIndex, int startX, int startY, int sizeX, int sizeY, int rotation,
+                                      const std::vector<SearchRect>& inPoints, std::vector<wxRect>& outRects) const {
+    if (!m_document || pageIndex < 0 || pageIndex >= m_pageCount || inPoints.empty()) {
+        return;
+    }
+
+    ScopedPage page(FPDF_LoadPage(m_document.get(), pageIndex));
+    if (!page) return;
+
+    outRects.reserve(outRects.size() + inPoints.size());
+    for (const auto& pt : inPoints) {
+        int devX1 = 0, devY1 = 0;
+        int devX2 = 0, devY2 = 0;
+        if (FPDF_PageToDevice(page.get(), startX, startY, sizeX, sizeY, rotation, pt.left, pt.top, &devX1, &devY1) &&
+            FPDF_PageToDevice(page.get(), startX, startY, sizeX, sizeY, rotation, pt.right, pt.bottom, &devX2, &devY2)) {
+            const int rx = std::min(devX1, devX2);
+            const int ry = std::min(devY1, devY2);
+            const int rw = std::max(2, std::abs(devX2 - devX1));
+            const int rh = std::max(2, std::abs(devY2 - devY1));
+            outRects.emplace_back(rx, ry, rw, rh);
+        }
+    }
+}
+
 } // namespace pdf

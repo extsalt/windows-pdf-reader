@@ -8,6 +8,8 @@
 #include <wx/bitmap.h>
 #include <pdfium/fpdfview.h>
 #include <pdfium/fpdf_doc.h>
+#include <pdfium/fpdf_text.h>
+#include <wx/gdicmn.h>
 
 namespace pdf {
 
@@ -36,9 +38,41 @@ struct BitmapDeleter {
     }
 };
 
+struct TextPageDeleter {
+    void operator()(FPDF_TEXTPAGE tp) const noexcept {
+        if (tp) {
+            FPDFText_ClosePage(tp);
+        }
+    }
+};
+
+struct SearchContextDeleter {
+    void operator()(FPDF_SCHHANDLE sch) const noexcept {
+        if (sch) {
+            FPDFText_FindClose(sch);
+        }
+    }
+};
+
 using ScopedDocument = std::unique_ptr<std::remove_pointer_t<FPDF_DOCUMENT>, DocumentDeleter>;
 using ScopedPage = std::unique_ptr<std::remove_pointer_t<FPDF_PAGE>, PageDeleter>;
 using ScopedBitmap = std::unique_ptr<std::remove_pointer_t<FPDF_BITMAP>, BitmapDeleter>;
+using ScopedTextPage = std::unique_ptr<std::remove_pointer_t<FPDF_TEXTPAGE>, TextPageDeleter>;
+using ScopedSearchContext = std::unique_ptr<std::remove_pointer_t<FPDF_SCHHANDLE>, SearchContextDeleter>;
+
+struct SearchRect {
+    double left{0.0};
+    double top{0.0};
+    double right{0.0};
+    double bottom{0.0};
+};
+
+struct SearchMatch {
+    int pageIndex{0};
+    int charIndex{0};
+    int charCount{0};
+    std::vector<SearchRect> rectsPoints;
+};
 
 struct PageSize {
     double widthPoints{0.0};
@@ -87,6 +121,11 @@ public:
 
     // Render a page at given pixel dimensions and rotation (0: normal, 1: 90 deg, 2: 180 deg, 3: 270 deg)
     [[nodiscard]] wxImage RenderPageToImage(int pageIndex, int targetWidth, int targetHeight, int rotation = 0) const;
+
+    // Text search operations
+    [[nodiscard]] std::vector<SearchMatch> SearchText(const std::wstring& query, bool matchCase = false) const;
+    void ConvertPointsToDevice(int pageIndex, int startX, int startY, int sizeX, int sizeY, int rotation,
+                               const std::vector<SearchRect>& inPoints, std::vector<wxRect>& outRects) const;
 
     // Watermark filter & dark-hat suppression
     void SetWatermarkFilter(bool enable) noexcept { m_watermarkFilterEnabled = enable; }

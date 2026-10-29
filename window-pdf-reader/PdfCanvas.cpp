@@ -4,12 +4,84 @@
 #include <algorithm>
 #include <cmath>
 
+#ifdef __WXMSW__
+#include <windows.h>
+#pragma comment(lib, "msimg32.lib")
+
+namespace {
+
+void DrawHighlightRect(HDC hdc, const wxRect& r, COLORREF fillCol, BYTE fillAlpha, COLORREF borderCol) {
+    if (!hdc || r.width <= 0 || r.height <= 0) return;
+
+    HDC memDC = CreateCompatibleDC(hdc);
+    if (!memDC) return;
+
+    BITMAPINFO bmi{};
+    bmi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+    bmi.bmiHeader.biWidth = r.width;
+    bmi.bmiHeader.biHeight = -r.height; // top-down DIB
+    bmi.bmiHeader.biPlanes = 1;
+    bmi.bmiHeader.biBitCount = 32;
+    bmi.bmiHeader.biCompression = BI_RGB;
+
+    void* bits = nullptr;
+    HBITMAP dib = CreateDIBSection(memDC, &bmi, DIB_RGB_COLORS, &bits, nullptr, 0);
+    if (dib && bits) {
+        HGDIOBJ oldBmp = SelectObject(memDC, dib);
+
+        const BYTE red = GetRValue(fillCol);
+        const BYTE green = GetGValue(fillCol);
+        const BYTE blue = GetBValue(fillCol);
+
+        // Pre-multiplied alpha for AC_SRC_OVER with AC_SRC_ALPHA
+        const BYTE a = fillAlpha;
+        const BYTE pr = static_cast<BYTE>((static_cast<unsigned int>(red) * a) / 255);
+        const BYTE pg = static_cast<BYTE>((static_cast<unsigned int>(green) * a) / 255);
+        const BYTE pb = static_cast<BYTE>((static_cast<unsigned int>(blue) * a) / 255);
+
+        const uint32_t pixel = (static_cast<uint32_t>(a) << 24) |
+                               (static_cast<uint32_t>(pr) << 16) |
+                               (static_cast<uint32_t>(pg) << 8) |
+                               (static_cast<uint32_t>(pb));
+
+        uint32_t* pPixels = static_cast<uint32_t*>(bits);
+        const size_t totalPixels = static_cast<size_t>(r.width) * static_cast<size_t>(r.height);
+        std::fill_n(pPixels, totalPixels, pixel);
+
+        BLENDFUNCTION bf{};
+        bf.BlendOp = AC_SRC_OVER;
+        bf.BlendFlags = 0;
+        bf.SourceConstantAlpha = 255;
+        bf.AlphaFormat = AC_SRC_ALPHA;
+
+        AlphaBlend(hdc, r.x, r.y, r.width, r.height,
+                   memDC, 0, 0, r.width, r.height, bf);
+
+        SelectObject(memDC, oldBmp);
+        DeleteObject(dib);
+    }
+    DeleteDC(memDC);
+
+    // Draw crisp 1px border around the highlight
+    HPEN pen = CreatePen(PS_SOLID, 1, borderCol);
+    HGDIOBJ oldPen = SelectObject(hdc, pen);
+    HGDIOBJ oldBrush = SelectObject(hdc, GetStockObject(HOLLOW_BRUSH));
+    Rectangle(hdc, r.x, r.y, r.x + r.width, r.y + r.height);
+    SelectObject(hdc, oldBrush);
+    SelectObject(hdc, oldPen);
+    DeleteObject(pen);
+}
+
+} // namespace
+#endif
+
 namespace pdf {
 
 wxBEGIN_EVENT_TABLE(PdfCanvas, wxScrolledCanvas)
     EVT_PAINT(PdfCanvas::OnPaint)
     EVT_SIZE(PdfCanvas::OnSize)
     EVT_MOUSEWHEEL(PdfCanvas::OnMouseWheel)
+    EVT_LEFT_DCLICK(PdfCanvas::OnLeftDClick)
     EVT_KEY_DOWN(PdfCanvas::OnKeyDown)
     EVT_SCROLLWIN(PdfCanvas::OnScroll)
     EVT_CONTEXT_MENU(PdfCanvas::OnContextMenu)
@@ -53,8 +125,9 @@ void PdfCanvas::OnDocumentOpened() {
 }
 
 void PdfCanvas::OnDocumentClosed() {
-    m_currentPage = 0;
-    ClearBitmapCache();
+    m_currentPage = 0;
+    ClearBitmapCache();
+    ClearSearchResults();
     m_pageRects.clear();
     m_totalVirtualHeight = 0;
     m_maxPageWidth = 0;
@@ -146,7 +219,8 @@ void PdfCanvas::RecomputeContinuousLayout() {
         m_pageRects[i].x = std::max(PADDING_X, (virtualWidth - m_pageRects[i].width) / 2);
     }
 
-    SetVirtualSize(virtualWidth, m_totalVirtualHeight);
+    SetVirtualSize(virtualWidth, m_totalVirtualHeight);
+    RecomputeSearchDeviceRects();
 }
 
 bool PdfCanvas::SetPage(int pageIndex, bool alignTop) {
@@ -392,7 +466,7 @@ void PdfCanvas::OnPaint(wxPaintEvent& /*event*/) {
 
     if (!m_engine || !m_engine->IsLoaded() || m_pageRects.empty()) {
         dc.SetTextForeground(wxColour(160, 160, 165));
-        const wxString msg = "Drop a PDF file here or press Ctrl+O to open";
+        const wxString msg = "Drop a PDF file here, double-click, or press Ctrl+O to open";
         const wxSize textSize = dc.GetTextExtent(msg);
         dc.DrawText(msg, std::max(20, (clientSize.GetWidth() - textSize.GetWidth()) / 2),
                          std::max(20, (clientSize.GetHeight() - textSize.GetHeight()) / 2));
@@ -435,6 +509,37 @@ void PdfCanvas::OnPaint(wxPaintEvent& /*event*/) {
         dc.SetPen(wxPen(wxColour(50, 50, 55), 1));
         dc.SetBrush(*wxTRANSPARENT_BRUSH);
         dc.DrawRectangle(r.x, r.y, r.width, r.height);
+
+        // Draw search highlights on visible page i
+        if (!m_searchMatches.empty()) {
+#ifdef __WXMSW__
+            HDC hdc = static_cast<HDC>(dc.GetHandle());
+#endif
+            for (size_t m = 0; m < m_searchMatches.size(); ++m) {
+                const auto& match = m_searchMatches[m];
+                if (match.pageIndex != static_cast<int>(i)) {
+                    continue;
+                }
+                const bool isActive = (static_cast<int>(m) == m_currentMatchIndex);
+                // Active match: Amber/Orange (vivid highlight)
+                // Other matches: Canary Yellow
+                const COLORREF fillCol = isActive ? RGB(255, 140, 0) : RGB(255, 235, 59);
+                const BYTE fillAlpha = isActive ? 130 : 80;
+                const COLORREF borderCol = isActive ? RGB(230, 81, 0) : RGB(200, 175, 20);
+
+                for (const auto& dRect : match.deviceRects) {
+                    wxRect hr = dRect;
+                    hr.Inflate(1, 1);
+#ifdef __WXMSW__
+                    DrawHighlightRect(hdc, hr, fillCol, fillAlpha, borderCol);
+#else
+                    dc.SetPen(wxPen(wxColour(borderCol), 1));
+                    dc.SetBrush(wxBrush(wxColour(fillCol)));
+                    dc.DrawRectangle(hr);
+#endif
+                }
+            }
+        }
     }
 }
 
@@ -457,6 +562,13 @@ void PdfCanvas::OnScroll(wxScrollWinEvent& event) {
     event.Skip();
     // Update active page indicator as user scrolls continuously
     UpdateCurrentPageFromScroll();
+}
+
+void PdfCanvas::OnLeftDClick(wxMouseEvent& event) {
+    if (m_onDoubleClicked) {
+        m_onDoubleClicked();
+    }
+    event.Skip();
 }
 
 void PdfCanvas::OnMouseWheel(wxMouseEvent& event) {
@@ -574,6 +686,118 @@ void PdfCanvas::OnContextMenu(wxContextMenuEvent& /*event*/) {
     }, mProps->GetId());
 
     PopupMenu(&menu);
+}
+
+void PdfCanvas::SetSearchResults(const std::vector<SearchMatch>& matches) {
+    m_searchMatches.clear();
+    m_currentMatchIndex = -1;
+
+    m_searchMatches.reserve(matches.size());
+    for (size_t i = 0; i < matches.size(); ++i) {
+        CanvasSearchMatch cm;
+        cm.pageIndex = matches[i].pageIndex;
+        cm.matchIndex = static_cast<int>(i);
+        cm.rectsPoints = matches[i].rectsPoints;
+        m_searchMatches.push_back(std::move(cm));
+    }
+
+    RecomputeSearchDeviceRects();
+
+    if (!m_searchMatches.empty()) {
+        m_currentMatchIndex = 0;
+        ScrollToCurrentMatch();
+    } else {
+        Refresh();
+    }
+}
+
+void PdfCanvas::ClearSearchResults() {
+    m_searchMatches.clear();
+    m_currentMatchIndex = -1;
+    Refresh();
+}
+
+bool PdfCanvas::NextSearchMatch() {
+    if (m_searchMatches.empty()) return false;
+    m_currentMatchIndex = (m_currentMatchIndex + 1) % static_cast<int>(m_searchMatches.size());
+    ScrollToCurrentMatch();
+    return true;
+}
+
+bool PdfCanvas::PreviousSearchMatch() {
+    if (m_searchMatches.empty()) return false;
+    m_currentMatchIndex = (m_currentMatchIndex - 1 + static_cast<int>(m_searchMatches.size())) % static_cast<int>(m_searchMatches.size());
+    ScrollToCurrentMatch();
+    return true;
+}
+
+bool PdfCanvas::SelectSearchMatch(int index) {
+    if (index < 0 || index >= static_cast<int>(m_searchMatches.size())) return false;
+    m_currentMatchIndex = index;
+    ScrollToCurrentMatch();
+    return true;
+}
+
+void PdfCanvas::ScrollToCurrentMatch() {
+    if (m_currentMatchIndex < 0 || m_currentMatchIndex >= static_cast<int>(m_searchMatches.size())) {
+        return;
+    }
+    const auto& match = m_searchMatches[m_currentMatchIndex];
+    if (match.boundingBox.IsEmpty()) return;
+
+    int rateX = 16, rateY = 16;
+    GetScrollPixelsPerUnit(&rateX, &rateY);
+
+    const int clientH = GetClientSize().GetHeight();
+    const int clientW = GetClientSize().GetWidth();
+
+    int curX = 0, curY = 0;
+    GetViewStart(&curX, &curY);
+
+    const int targetY = match.boundingBox.y - (clientH / 2) + (match.boundingBox.height / 2);
+    const int clampedY = std::clamp(targetY, 0, std::max(0, m_totalVirtualHeight - clientH));
+    const int scrollUnitY = rateY > 0 ? (clampedY / rateY) : 0;
+
+    int scrollUnitX = curX;
+    if (rateX > 0 && match.boundingBox.width > 0) {
+        const int targetX = match.boundingBox.x - (clientW / 2) + (match.boundingBox.width / 2);
+        const int clampedX = std::clamp(targetX, 0, std::max(0, GetVirtualSize().GetWidth() - clientW));
+        scrollUnitX = clampedX / rateX;
+    }
+
+    Scroll(scrollUnitX, scrollUnitY);
+
+    if (match.pageIndex != m_currentPage) {
+        m_currentPage = match.pageIndex;
+        if (m_onPageChanged) {
+            m_onPageChanged(m_currentPage + 1, GetTotalPages());
+        }
+    }
+    Refresh();
+}
+
+void PdfCanvas::RecomputeSearchDeviceRects() {
+    if (!m_engine || !m_engine->IsLoaded() || m_searchMatches.empty() || m_pageRects.empty()) {
+        return;
+    }
+
+    for (auto& match : m_searchMatches) {
+        match.deviceRects.clear();
+        if (match.pageIndex >= 0 && match.pageIndex < static_cast<int>(m_pageRects.size())) {
+            const auto& pr = m_pageRects[match.pageIndex];
+            m_engine->ConvertPointsToDevice(match.pageIndex, pr.x, pr.y, pr.width, pr.height, m_rotation,
+                                            match.rectsPoints, match.deviceRects);
+            if (!match.deviceRects.empty()) {
+                wxRect box = match.deviceRects[0];
+                for (size_t r = 1; r < match.deviceRects.size(); ++r) {
+                    box.Union(match.deviceRects[r]);
+                }
+                match.boundingBox = box;
+            } else {
+                match.boundingBox = wxRect();
+            }
+        }
+    }
 }
 
 } // namespace pdf
