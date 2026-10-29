@@ -2,6 +2,7 @@
 
 #include <wx/wx.h>
 #include <wx/scrolwin.h>
+#include <wx/timer.h>
 #include "PdfEngine.h"
 #include <vector>
 #include <unordered_map>
@@ -42,7 +43,7 @@ public:
     using DoubleClickCallback = std::function<void()>;
 
     explicit PdfCanvas(wxWindow* parent, std::shared_ptr<PdfEngine> engine);
-    ~PdfCanvas() override = default;
+    ~PdfCanvas() override;
 
     // Document operations
     void OnDocumentOpened();
@@ -91,6 +92,10 @@ public:
     bool SelectSearchMatch(int index);
     void ScrollToCurrentMatch();
 
+    // Autoscroll / Middle-drag pan operations
+    void StopAutoScroll();
+    [[nodiscard]] bool IsAutoScrolling() const noexcept { return m_isAutoScrolling; }
+
     // Page metadata query
     [[nodiscard]] PageSize GetCurrentPageOriginalSize() const;
 
@@ -98,10 +103,17 @@ private:
     void OnPaint(wxPaintEvent& event);
     void OnSize(wxSizeEvent& event);
     void OnMouseWheel(wxMouseEvent& event);
+    void OnLeftDown(wxMouseEvent& event);
+    void OnRightDown(wxMouseEvent& event);
+    void OnMiddleDown(wxMouseEvent& event);
+    void OnMiddleUp(wxMouseEvent& event);
+    void OnMouseMove(wxMouseEvent& event);
     void OnLeftDClick(wxMouseEvent& event);
     void OnKeyDown(wxKeyEvent& event);
     void OnScroll(wxScrollWinEvent& event);
     void OnContextMenu(wxContextMenuEvent& event);
+    void OnMouseCaptureLost(wxMouseCaptureLostEvent& event);
+    void OnAutoScrollTimer(wxTimerEvent& event);
 
     void RecomputeContinuousLayout();
     void RecomputeSearchDeviceRects();
@@ -122,6 +134,15 @@ private:
     std::vector<PageRect> m_pageRects;
     int m_totalVirtualHeight{0};
     int m_maxPageWidth{0};
+
+    // Autoscroll (Middle-button Drag / Pan) state
+    bool m_isAutoScrolling{false};
+    bool m_autoScrollMoved{false};
+    wxPoint m_autoScrollOrigin{0, 0};
+    wxPoint m_autoScrollCurrentPos{0, 0};
+    double m_autoScrollPixelX{0.0};
+    double m_autoScrollPixelY{0.0};
+    wxTimer m_autoScrollTimer;
 
     // LRU Bitmap Cache to keep RAM footprint strictly minimal (~20MB)
     static constexpr size_t MAX_CACHED_PAGES = 6;

@@ -81,6 +81,11 @@ wxBEGIN_EVENT_TABLE(PdfCanvas, wxScrolledCanvas)
     EVT_PAINT(PdfCanvas::OnPaint)
     EVT_SIZE(PdfCanvas::OnSize)
     EVT_MOUSEWHEEL(PdfCanvas::OnMouseWheel)
+    EVT_LEFT_DOWN(PdfCanvas::OnLeftDown)
+    EVT_RIGHT_DOWN(PdfCanvas::OnRightDown)
+    EVT_MIDDLE_DOWN(PdfCanvas::OnMiddleDown)
+    EVT_MIDDLE_UP(PdfCanvas::OnMiddleUp)
+    EVT_MOTION(PdfCanvas::OnMouseMove)
     EVT_LEFT_DCLICK(PdfCanvas::OnLeftDClick)
     EVT_KEY_DOWN(PdfCanvas::OnKeyDown)
     EVT_SCROLLWIN(PdfCanvas::OnScroll)
@@ -88,11 +93,19 @@ wxBEGIN_EVENT_TABLE(PdfCanvas, wxScrolledCanvas)
 wxEND_EVENT_TABLE()
 
 PdfCanvas::PdfCanvas(wxWindow* parent, std::shared_ptr<PdfEngine> engine)
-    : wxScrolledCanvas(parent, wxID_ANY, wxDefaultPosition, wxDefaultSize, wxVSCROLL | wxBORDER_NONE),
-      m_engine(std::move(engine)) {
+    : wxScrolledCanvas(parent, wxID_ANY, wxDefaultPosition, wxDefaultSize, wxHSCROLL | wxVSCROLL | wxBORDER_NONE),
+      m_engine(std::move(engine)),
+      m_autoScrollTimer(this) {
     SetBackgroundStyle(wxBG_STYLE_PAINT);
-    SetScrollRate(0, 16);
+    SetScrollRate(16, 16);
     ShowScrollbars(wxSHOW_SB_NEVER, wxSHOW_SB_ALWAYS);
+
+    Bind(wxEVT_TIMER, &PdfCanvas::OnAutoScrollTimer, this);
+    Bind(wxEVT_MOUSE_CAPTURE_LOST, &PdfCanvas::OnMouseCaptureLost, this);
+}
+
+PdfCanvas::~PdfCanvas() {
+    StopAutoScroll();
 }
 
 int PdfCanvas::GetTotalPages() const noexcept {
@@ -125,8 +138,11 @@ void PdfCanvas::OnDocumentOpened() {
 }
 
 void PdfCanvas::OnDocumentClosed() {
-    m_currentPage = 0;
-    ClearBitmapCache();
+    StopAutoScroll();
+    m_currentPage = 0;
+
+    ClearBitmapCache();
+
     ClearSearchResults();
     m_pageRects.clear();
     m_totalVirtualHeight = 0;
@@ -208,19 +224,17 @@ void PdfCanvas::RecomputeContinuousLayout() {
     const int clientW = clientSize.GetWidth();
     const int virtualWidth = std::max(maxW + (PADDING_X * 2), clientW);
 
-    if (virtualWidth > clientW) {
-        SetScrollRate(16, 16);
-    } else {
-        SetScrollRate(0, 16);
-    }
+    SetScrollRate(16, 16);
 
     // Center each page horizontally with symmetric left and right margins
     for (int i = 0; i < pageCount; ++i) {
         m_pageRects[i].x = std::max(PADDING_X, (virtualWidth - m_pageRects[i].width) / 2);
     }
 
-    SetVirtualSize(virtualWidth, m_totalVirtualHeight);
-    RecomputeSearchDeviceRects();
+    SetVirtualSize(virtualWidth, m_totalVirtualHeight);
+
+    RecomputeSearchDeviceRects();
+
 }
 
 bool PdfCanvas::SetPage(int pageIndex, bool alignTop) {
@@ -541,6 +555,67 @@ void PdfCanvas::OnPaint(wxPaintEvent& /*event*/) {
             }
         }
     }
+
+    // Draw Chrome-style autoscroll origin HUD if active
+    if (m_isAutoScrolling) {
+        const int anchorDocX = m_autoScrollOrigin.x + (curX * rateX);
+        const int anchorDocY = m_autoScrollOrigin.y + (curY * rateY);
+
+        const int dx = m_autoScrollCurrentPos.x - m_autoScrollOrigin.x;
+        const int dy = m_autoScrollCurrentPos.y - m_autoScrollOrigin.y;
+
+        constexpr int R = 15;
+
+        // Dark translucent circle with subtle 1px border
+        dc.SetBrush(wxBrush(wxColour(30, 30, 35)));
+        dc.SetPen(wxPen(wxColour(110, 110, 120), 1));
+        dc.DrawCircle(anchorDocX, anchorDocY, R);
+
+        // Center pivot dot
+        dc.SetBrush(wxBrush(wxColour(220, 220, 225)));
+        dc.SetPen(*wxTRANSPARENT_PEN);
+        dc.DrawCircle(anchorDocX, anchorDocY, 2);
+
+        // Highlight colors for directional arrows
+        const wxColour colActive(0, 160, 255);
+        const wxColour colInactive(140, 140, 150);
+
+        // North triangle (Up)
+        dc.SetBrush(wxBrush(dy < -8 ? colActive : colInactive));
+        wxPoint ptsN[3] = {
+            wxPoint(anchorDocX, anchorDocY - 11),
+            wxPoint(anchorDocX - 4, anchorDocY - 6),
+            wxPoint(anchorDocX + 4, anchorDocY - 6)
+        };
+        dc.DrawPolygon(3, ptsN);
+
+        // South triangle (Down)
+        dc.SetBrush(wxBrush(dy > 8 ? colActive : colInactive));
+        wxPoint ptsS[3] = {
+            wxPoint(anchorDocX, anchorDocY + 11),
+            wxPoint(anchorDocX - 4, anchorDocY + 6),
+            wxPoint(anchorDocX + 4, anchorDocY + 6)
+        };
+        dc.DrawPolygon(3, ptsS);
+
+        // West triangle (Left)
+        dc.SetBrush(wxBrush(dx < -8 ? colActive : colInactive));
+        wxPoint ptsW[3] = {
+            wxPoint(anchorDocX - 11, anchorDocY),
+            wxPoint(anchorDocX - 6, anchorDocY - 4),
+            wxPoint(anchorDocX - 6, anchorDocY + 4)
+        };
+        dc.DrawPolygon(3, ptsW);
+
+        // East triangle (Right)
+        dc.SetBrush(wxBrush(dx > 8 ? colActive : colInactive));
+        wxPoint ptsE[3] = {
+            wxPoint(anchorDocX + 11, anchorDocY),
+            wxPoint(anchorDocX + 6, anchorDocY - 4),
+            wxPoint(anchorDocX + 6, anchorDocY + 4)
+        };
+        dc.DrawPolygon(3, ptsE);
+    }
 }
 
 void PdfCanvas::OnSize(wxSizeEvent& event) {
@@ -572,6 +647,11 @@ void PdfCanvas::OnLeftDClick(wxMouseEvent& event) {
 }
 
 void PdfCanvas::OnMouseWheel(wxMouseEvent& event) {
+    if (m_isAutoScrolling) {
+        StopAutoScroll();
+        return;
+    }
+
     if (event.ControlDown()) {
         // Zoom on Ctrl + Wheel
         if (event.GetWheelRotation() > 0) {
@@ -579,6 +659,12 @@ void PdfCanvas::OnMouseWheel(wxMouseEvent& event) {
         } else {
             ZoomOut();
         }
+    } else if (event.ShiftDown()) {
+        // Horizontal scroll on Shift + Wheel
+        int curX = 0, curY = 0;
+        GetViewStart(&curX, &curY);
+        const int delta = (event.GetWheelRotation() > 0) ? -3 : 3;
+        Scroll(std::max(0, curX + delta), curY);
     } else {
         // Default smooth continuous scrolling through all pages
         event.Skip();
@@ -587,6 +673,11 @@ void PdfCanvas::OnMouseWheel(wxMouseEvent& event) {
 }
 
 void PdfCanvas::OnKeyDown(wxKeyEvent& event) {
+    if (m_isAutoScrolling) {
+        StopAutoScroll();
+        return;
+    }
+
     const int keyCode = event.GetKeyCode();
 
     switch (keyCode) {
@@ -638,6 +729,10 @@ void PdfCanvas::OnKeyDown(wxKeyEvent& event) {
 }
 
 void PdfCanvas::OnContextMenu(wxContextMenuEvent& /*event*/) {
+    if (m_isAutoScrolling) {
+        StopAutoScroll();
+    }
+
     wxMenu menu;
     const bool hasDoc = (m_engine && m_engine->IsLoaded());
 
@@ -797,6 +892,162 @@ void PdfCanvas::RecomputeSearchDeviceRects() {
                 match.boundingBox = wxRect();
             }
         }
+    }
+}
+
+void PdfCanvas::OnMiddleDown(wxMouseEvent& event) {
+    if (!m_engine || !m_engine->IsLoaded()) {
+        event.Skip();
+        return;
+    }
+
+    if (m_isAutoScrolling) {
+        StopAutoScroll();
+        return;
+    }
+
+    m_isAutoScrolling = true;
+    m_autoScrollMoved = false;
+    m_autoScrollOrigin = event.GetPosition();
+    m_autoScrollCurrentPos = event.GetPosition();
+
+    int curX = 0, curY = 0;
+    GetViewStart(&curX, &curY);
+    int rateX = 16, rateY = 16;
+    GetScrollPixelsPerUnit(&rateX, &rateY);
+    if (rateX <= 0) rateX = 16;
+    if (rateY <= 0) rateY = 16;
+    m_autoScrollPixelX = static_cast<double>(curX * rateX);
+    m_autoScrollPixelY = static_cast<double>(curY * rateY);
+
+    if (!HasCapture()) {
+        CaptureMouse();
+    }
+
+    SetCursor(wxCursor(wxCURSOR_SIZING));
+    m_autoScrollTimer.Start(15);
+    Refresh();
+}
+
+void PdfCanvas::OnMiddleUp(wxMouseEvent& event) {
+    if (m_isAutoScrolling) {
+        if (m_autoScrollMoved) {
+            StopAutoScroll();
+            return;
+        }
+    }
+    event.Skip();
+}
+
+void PdfCanvas::OnMouseMove(wxMouseEvent& event) {
+    if (m_isAutoScrolling) {
+        m_autoScrollCurrentPos = event.GetPosition();
+        const int dx = m_autoScrollCurrentPos.x - m_autoScrollOrigin.x;
+        const int dy = m_autoScrollCurrentPos.y - m_autoScrollOrigin.y;
+
+        if (std::abs(dx) > 6 || std::abs(dy) > 6) {
+            m_autoScrollMoved = true;
+        }
+
+        if (std::abs(dx) > std::abs(dy) * 2 && std::abs(dx) > 10) {
+            SetCursor(wxCursor(wxCURSOR_SIZEWE));
+        } else if (std::abs(dy) > std::abs(dx) * 2 && std::abs(dy) > 10) {
+            SetCursor(wxCursor(wxCURSOR_SIZENS));
+        } else {
+            SetCursor(wxCursor(wxCURSOR_SIZING));
+        }
+
+        Refresh();
+        return;
+    }
+    event.Skip();
+}
+
+void PdfCanvas::OnLeftDown(wxMouseEvent& event) {
+    if (m_isAutoScrolling) {
+        StopAutoScroll();
+        return;
+    }
+    event.Skip();
+}
+
+void PdfCanvas::OnRightDown(wxMouseEvent& event) {
+    if (m_isAutoScrolling) {
+        StopAutoScroll();
+        return;
+    }
+    event.Skip();
+}
+
+void PdfCanvas::OnMouseCaptureLost(wxMouseCaptureLostEvent& /*event*/) {
+    StopAutoScroll();
+}
+
+void PdfCanvas::StopAutoScroll() {
+    if (!m_isAutoScrolling) return;
+    m_isAutoScrolling = false;
+    m_autoScrollMoved = false;
+    m_autoScrollTimer.Stop();
+    if (HasCapture()) {
+        ReleaseMouse();
+    }
+    SetCursor(wxNullCursor);
+    Refresh();
+}
+
+void PdfCanvas::OnAutoScrollTimer(wxTimerEvent& /*event*/) {
+    if (!m_isAutoScrolling || !m_engine || !m_engine->IsLoaded()) {
+        StopAutoScroll();
+        return;
+    }
+
+    const int dx = m_autoScrollCurrentPos.x - m_autoScrollOrigin.x;
+    const int dy = m_autoScrollCurrentPos.y - m_autoScrollOrigin.y;
+
+    constexpr int DEADZONE = 8;
+    double speedX = 0.0;
+    double speedY = 0.0;
+
+    if (std::abs(dx) > DEADZONE) {
+        const double effX = (dx > 0) ? (dx - DEADZONE) : (dx + DEADZONE);
+        speedX = std::clamp(effX * 0.22, -60.0, 60.0);
+    }
+
+    if (std::abs(dy) > DEADZONE) {
+        const double effY = (dy > 0) ? (dy - DEADZONE) : (dy + DEADZONE);
+        speedY = std::clamp(effY * 0.22, -60.0, 60.0);
+    }
+
+    if (speedX == 0.0 && speedY == 0.0) {
+        return;
+    }
+
+    m_autoScrollPixelX += speedX;
+    m_autoScrollPixelY += speedY;
+
+    int rateX = 16, rateY = 16;
+    GetScrollPixelsPerUnit(&rateX, &rateY);
+    if (rateX <= 0) rateX = 16;
+    if (rateY <= 0) rateY = 16;
+
+    const wxSize clientSize = GetClientSize();
+    const wxSize virtualSize = GetVirtualSize();
+
+    const int maxPixelX = std::max(0, virtualSize.GetWidth() - clientSize.GetWidth());
+    const int maxPixelY = std::max(0, m_totalVirtualHeight - clientSize.GetHeight());
+
+    m_autoScrollPixelX = std::clamp(m_autoScrollPixelX, 0.0, static_cast<double>(maxPixelX));
+    m_autoScrollPixelY = std::clamp(m_autoScrollPixelY, 0.0, static_cast<double>(maxPixelY));
+
+    const int targetScrollX = static_cast<int>(std::round(m_autoScrollPixelX / rateX));
+    const int targetScrollY = static_cast<int>(std::round(m_autoScrollPixelY / rateY));
+
+    int curX = 0, curY = 0;
+    GetViewStart(&curX, &curY);
+
+    if (targetScrollX != curX || targetScrollY != curY) {
+        Scroll(targetScrollX, targetScrollY);
+        UpdateCurrentPageFromScroll();
     }
 }
 
