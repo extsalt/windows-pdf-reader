@@ -222,7 +222,7 @@ void MainFrame::SetupMenuBar() {
 
 void MainFrame::SetupMinimalBottomBar() {
     // 36px height dark floating pill HUD bar (Apple / VLC style)
-    m_bottomBar = new wxPanel(this, wxID_ANY, wxDefaultPosition, wxSize(460, 36), wxBORDER_NONE);
+    m_bottomBar = new wxPanel(this, wxID_ANY, wxDefaultPosition, wxSize(330, 36), wxBORDER_NONE);
     m_bottomBar->SetBackgroundColour(wxColour(24, 24, 28));
 
     // Custom paint event for sleek 1px rounded border and subtle dark background
@@ -235,15 +235,10 @@ void MainFrame::SetupMinimalBottomBar() {
     });
 
     auto* barSizer = new wxBoxSizer(wxHORIZONTAL);
-
-    // Left: Document Name
-    m_fileLabel = new wxStaticText(m_bottomBar, wxID_ANY, "Ready", wxDefaultPosition, wxSize(90, -1), wxST_ELLIPSIZE_END);
-    m_fileLabel->SetForegroundColour(wxColour(140, 140, 145));
-    wxFont infoFont = m_fileLabel->GetFont();
+    wxFont infoFont = m_bottomBar->GetFont();
     infoFont.SetPointSize(9);
-    m_fileLabel->SetFont(infoFont);
 
-    // Center: Page navigation controls
+    // Left: Page navigation controls
     auto* centerSizer = new wxBoxSizer(wxHORIZONTAL);
 
     auto makeFlatButton = [this](const wxString& label, int id, const wxString& tip) {
@@ -287,8 +282,6 @@ void MainFrame::SetupMinimalBottomBar() {
 
     // Assemble Floating Bar
     barSizer->AddSpacer(12);
-    barSizer->Add(m_fileLabel, 0, wxALIGN_CENTER_VERTICAL);
-    barSizer->AddStretchSpacer(1);
     barSizer->Add(centerSizer, 0, wxALIGN_CENTER_VERTICAL);
     barSizer->AddStretchSpacer(1);
     barSizer->Add(rightSizer, 0, wxALIGN_CENTER_VERTICAL);
@@ -327,12 +320,11 @@ void MainFrame::SetupMinimalBottomBar() {
         OnZoomLabelClicked(evt);
     });
 
-    // Double-clicking the bottom bar or file label toggles/hides bars
+    // Double-clicking the bottom bar toggles/hides bars
     auto onBottomBarDClick = [this](wxMouseEvent&) {
         OnCanvasDoubleClicked();
     };
     m_bottomBar->Bind(wxEVT_LEFT_DCLICK, onBottomBarDClick);
-    m_fileLabel->Bind(wxEVT_LEFT_DCLICK, onBottomBarDClick);
 }
 
 void MainFrame::UpdateFloatingBarPosition() {
@@ -630,9 +622,9 @@ void MainFrame::OnMenuToggleRemoveWatermark(wxCommandEvent& event) {
     if (m_menuItemRemoveWatermark) {
         m_menuItemRemoveWatermark->Check(enable);
     }
-    if (m_fileLabel && m_engine->IsLoaded()) {
+    if (m_engine->IsLoaded() && !m_currentFilePath.empty()) {
         wxFileName fn(m_currentFilePath);
-        m_fileLabel->SetLabel(fn.GetFullName() + (enable ? " [Watermark Suppressed]" : ""));
+        SetTitle(wxString::Format("%s%s - PDF Reader", fn.GetFullName(), enable ? " [Watermark Suppressed]" : ""));
     }
 }
 
@@ -734,11 +726,8 @@ void MainFrame::UpdateControlsState() {
 
 void MainFrame::UpdateBottomBar(int currentPage, int totalPages, double zoomFactor, ZoomMode mode) {
     if (totalPages > 0) {
-        wxFileName fn(m_currentFilePath);
-        if (m_fileLabel) m_fileLabel->SetLabel(fn.GetFullName());
         if (m_pageLabel) m_pageLabel->SetLabel(wxString::Format("%d / %d", currentPage, totalPages));
     } else {
-        if (m_fileLabel) m_fileLabel->SetLabel("Ready");
         if (m_pageLabel) m_pageLabel->SetLabel("- / -");
     }
 

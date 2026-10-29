@@ -99,7 +99,6 @@ private:
 
     // Minimal VLC-style bottom control bar
     wxPanel* m_bottomBar{nullptr};
-    wxStaticText* m_fileLabel{nullptr};
     wxButton* m_btnPrev{nullptr};
     wxStaticText* m_pageLabel{nullptr};
     wxButton* m_btnNext{nullptr};
